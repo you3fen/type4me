@@ -18,7 +18,16 @@ final class AppearancePreviewTests: XCTestCase {
         XCTAssertEqual(presentation.visualStyle, .dual)
         XCTAssertFalse(presentation.showsLiveTranscript)
         XCTAssertFalse(presentation.enablesHoverTranscriptPreview)
+        XCTAssertTrue(presentation.showsModeName)
+        XCTAssertFalse(presentation.showsProviderName)
+        XCTAssertFalse(presentation.showsModelName)
         XCTAssertTrue(presentation.showsRecordingIndicator)
+    }
+
+    func testRecordingMetadataDisplayPreferenceDefaults() {
+        XCTAssertTrue(RecordingMetadataDisplayPreference.showModeNameDefault)
+        XCTAssertFalse(RecordingMetadataDisplayPreference.showProviderNameDefault)
+        XCTAssertFalse(RecordingMetadataDisplayPreference.showModelNameDefault)
     }
 
     func testFloatingBarPresentation_compactShowsRecordingIndicatorEvenWhenVisualStyleHidden() {

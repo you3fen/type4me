@@ -17,6 +17,8 @@ protocol FloatingBarState: AnyObject, Observable {
     var segments: [TranscriptionSegment] { get }
     var audioLevel: AudioLevelMeter { get }
     var currentMode: ProcessingMode { get }
+    var recordingProvider: ASRProvider? { get }
+    var recordingModelName: String? { get }
     var feedbackMessage: String { get }
     var feedbackKind: FeedbackKind { get }
     var processingFinishTime: Date? { get }
@@ -37,6 +39,27 @@ struct FloatingBarPresentation: Equatable {
     var visualStyle: RecordingVisualStyle
     var showsLiveTranscript: Bool
     var enablesHoverTranscriptPreview: Bool
+    var showsModeName: Bool = RecordingMetadataDisplayPreference.showModeNameDefault
+    var showsProviderName: Bool = RecordingMetadataDisplayPreference.showProviderNameDefault
+    var showsModelName: Bool = RecordingMetadataDisplayPreference.showModelNameDefault
+
+    init(
+        indicatorStyle: RecordingIndicatorStyle = .regular,
+        visualStyle: RecordingVisualStyle,
+        showsLiveTranscript: Bool,
+        enablesHoverTranscriptPreview: Bool,
+        showsModeName: Bool = RecordingMetadataDisplayPreference.showModeNameDefault,
+        showsProviderName: Bool = RecordingMetadataDisplayPreference.showProviderNameDefault,
+        showsModelName: Bool = RecordingMetadataDisplayPreference.showModelNameDefault
+    ) {
+        self.indicatorStyle = indicatorStyle
+        self.visualStyle = visualStyle
+        self.showsLiveTranscript = showsLiveTranscript
+        self.enablesHoverTranscriptPreview = enablesHoverTranscriptPreview
+        self.showsModeName = showsModeName
+        self.showsProviderName = showsProviderName
+        self.showsModelName = showsModelName
+    }
 
     var showsRecordingIndicator: Bool {
         indicatorStyle == .compact || visualStyle.showsRecordingPanel
@@ -77,6 +100,12 @@ struct FloatingBarView<S: FloatingBarState>: View {
     @AppStorage(LiveTranscriptDisplayPreference.storageKey) private var showLiveTranscript = LiveTranscriptDisplayPreference.defaultValue
     @AppStorage("tf_hoverTranscriptPreview") private var hoverTranscriptPreview = true
     @AppStorage(RecordingVisualStyle.storageKey) private var visualStyle = RecordingVisualStyle.defaultValue
+    @AppStorage(RecordingMetadataDisplayPreference.showModeNameKey)
+    private var showModeName = RecordingMetadataDisplayPreference.showModeNameDefault
+    @AppStorage(RecordingMetadataDisplayPreference.showProviderNameKey)
+    private var showProviderName = RecordingMetadataDisplayPreference.showProviderNameDefault
+    @AppStorage(RecordingMetadataDisplayPreference.showModelNameKey)
+    private var showModelName = RecordingMetadataDisplayPreference.showModelNameDefault
     @AppStorage("tf_language") private var language = AppLanguage.systemDefault
 
     // MARK: - Presentation Resolution
@@ -101,6 +130,18 @@ struct FloatingBarView<S: FloatingBarState>: View {
     private var effectiveHoverTranscriptPreview: Bool {
         guard effectiveIndicatorStyle == .regular else { return false }
         return presentationOverride?.enablesHoverTranscriptPreview ?? hoverTranscriptPreview
+    }
+
+    private var effectiveShowsModeName: Bool {
+        presentationOverride?.showsModeName ?? showModeName
+    }
+
+    private var effectiveShowsProviderName: Bool {
+        presentationOverride?.showsProviderName ?? showProviderName
+    }
+
+    private var effectiveShowsModelName: Bool {
+        presentationOverride?.showsModelName ?? showModelName
     }
 
     private var usesCompactPresentation: Bool {
@@ -162,6 +203,7 @@ struct FloatingBarView<S: FloatingBarState>: View {
             return .action(hoveredAction)
         }
         if showsModeHint,
+           recordingMetadataText != nil,
            (state.barPhase == .preparing || state.barPhase == .recording) {
             return .mode
         }
@@ -834,7 +876,7 @@ struct FloatingBarView<S: FloatingBarState>: View {
                 onHoverChanged: updateTranscriptHover
             )
         case .mode:
-            hintBubble(text: localizedCurrentModeName)
+            hintBubble(text: recordingMetadataText ?? "")
                 .transaction { $0.animation = nil }
         case .action(.finish):
             alignedActionHint(.finish)
@@ -843,11 +885,21 @@ struct FloatingBarView<S: FloatingBarState>: View {
         }
     }
 
-    private var localizedCurrentModeName: String {
+    private var recordingMetadataText: String? {
         // The floating bar stays alive across language changes, so it must
         // observe the preference instead of retaining a launch-time string.
         _ = language
-        return state.currentMode.localizedDisplayName
+        var components: [String] = []
+        if effectiveShowsModeName {
+            components.append(state.currentMode.localizedDisplayName)
+        }
+        if effectiveShowsProviderName, let provider = state.recordingProvider {
+            components.append(provider.displayName)
+        }
+        if effectiveShowsModelName, let model = state.recordingModelName, !model.isEmpty {
+            components.append(model)
+        }
+        return components.isEmpty ? nil : components.joined(separator: " · ")
     }
 
     private func alignedActionHint(_ action: RecordingControlAction) -> some View {
@@ -909,6 +961,11 @@ struct FloatingBarView<S: FloatingBarState>: View {
 
     private func showModeHint() {
         modeHintTask?.cancel()
+        guard recordingMetadataText != nil else {
+            showsModeHint = false
+            modeHintTask = nil
+            return
+        }
         showsModeHint = true
         modeHintTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(2))
