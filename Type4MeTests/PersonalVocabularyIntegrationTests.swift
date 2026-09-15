@@ -82,7 +82,7 @@ final class PersonalVocabularyIntegrationTests: XCTestCase {
     }
 
     private func run(text: String, vocabulary: [String], client: VocabularyMockClient,
-                     cancelled: Bool = false, threshold: Int = 0, sensitive: Bool = false, references: [VocabularyCorrectionReference] = []) async -> (text: String, trace: String?)? {
+                     cancelled: Bool = false, threshold: Int = 0, sensitive: Bool = false, references: [VocabularyCorrectionReference] = []) async -> RecognitionSession.IntelliSenseOutputForTesting? {
         let target = TargetApplicationContext(processIdentifier: nil, bundleIdentifier: "com.example.editor", displayName: "Editor")
         let snapshot = IntelliSenseContextSnapshot(bundleIdentifier: target.bundleIdentifier, appName: "Editor", appCategory: .development, controlCategory: .multiLine, contextBeforeCursor: "", contextAfterCursor: "", availability: sensitive ? .sensitive : .appAndControl, wasTruncated: false)
         let session = RecognitionSession()
