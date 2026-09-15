@@ -138,26 +138,20 @@ final class ModeStorageTests: XCTestCase {
     }
 
     func testReorderedModesKeepExactOrderAcrossRestartLoad() throws {
+        // Use the same isolated preferences dependency as the other storage
+        // tests. Restoring an absent Any? through a dictionary subscript can
+        // box Optional.none as NSNull, which is not a property-list value.
+        let suite = "ModeStorageTests.Reordered.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
         let preferenceKeys = [
             "tf_translateToChineseModeSeeded",
             "tf_agentModeSeeded",
             "tf_shortTextExemptionMigrated",
         ]
-        let previousValues = Dictionary(uniqueKeysWithValues: preferenceKeys.map {
-            ($0, UserDefaults.standard.object(forKey: $0))
-        })
-        defer {
-            for key in preferenceKeys {
-                if let value = previousValues[key] as? Any {
-                    UserDefaults.standard.set(value, forKey: key)
-                } else {
-                    UserDefaults.standard.removeObject(forKey: key)
-                }
-            }
-        }
-        preferenceKeys.forEach { UserDefaults.standard.set(true, forKey: $0) }
+        preferenceKeys.forEach { defaults.set(true, forKey: $0) }
 
-        let storage = ModeStorage(fileURL: testURL)
+        let storage = ModeStorage(fileURL: testURL, userDefaults: defaults)
         let reordered = Array(ProcessingMode.defaults.reversed())
 
         try storage.save(reordered)
