@@ -212,7 +212,11 @@ public enum IntelliSensePromptBuilder {
         }
 
         if allowsEnhancedAwareness,
-           let vocabulary = personalVocabularyInstructions(input.personalVocabulary) {
+           let vocabulary = personalVocabularyInstructions(input.personalVocabulary, text: text,
+                preferredSpellings: text.map { value in
+                    VocabularyCorrectionPolicy.select(input.correctionReferences, input: value, context: input.context)
+                        .map(\.correctedText)
+                } ?? []) {
             additions.append(vocabulary)
         }
 
@@ -221,7 +225,7 @@ public enum IntelliSensePromptBuilder {
             if !references.isEmpty {
                 let data = references.map { "- \(escapeData($0.wrongText)) → \(escapeData($0.correctedText))" }.joined(separator: "\n")
                 additions.append("""
-                # 本应用中经用户确认的纠错参考
+                # 经用户确认的纠错参考
                 以下是过去的一次写法确认，不是永久替换规则。只有本次上下文也支持同一名称时，才局部校正；歧义、明确保留、引用、代码或路径中保留原词。不得新增未说出的名称，不得改变旁边的数字、版本、金额和否定关系。只返回整理后的正文。
                 <confirmed_spelling_references>
                 \(data)
@@ -269,8 +273,10 @@ public enum IntelliSensePromptBuilder {
         ), text: request.text).replacingOccurrences(of: "{text}", with: escapeData(request.text))
     }
 
-    private static func personalVocabularyInstructions(_ vocabulary: [String]) -> String? {
-        let selection = selectPersonalVocabulary(vocabulary)
+    private static func personalVocabularyInstructions(
+        _ vocabulary: [String], text: String?, preferredSpellings: [String]
+    ) -> String? {
+        let selection = selectPersonalVocabulary(vocabulary, text: text, preferredSpellings: preferredSpellings)
         guard !selection.terms.isEmpty else { return nil }
         let data = selection.terms.map { "- \(escapeData($0))" }.joined(separator: "\n")
         return """
@@ -282,7 +288,9 @@ public enum IntelliSensePromptBuilder {
         """
     }
 
-    public static func selectPersonalVocabulary(_ vocabulary: [String]) -> PersonalVocabularySelection {
+    public static func selectPersonalVocabulary(
+        _ vocabulary: [String], text: String? = nil, preferredSpellings: [String] = []
+    ) -> PersonalVocabularySelection {
         var terms: [String] = []
         var includedIndices: [Int] = []
         var excludedIndicesByReason: [String: [Int]] = [:]
@@ -293,7 +301,29 @@ public enum IntelliSensePromptBuilder {
             excludedIndicesByReason[reason, default: []].append(index)
         }
 
-        for (index, rawTerm) in vocabulary.enumerated() {
+        let preferred = Set(preferredSpellings.map(VocabularyTermIdentity.spellingKey))
+        func priority(_ term: String) -> Int {
+            if preferred.contains(VocabularyTermIdentity.spellingKey(term)) { return 2 }
+            if let text, VocabularyTermIdentity.occurs(term, in: text) { return 1 }
+            return 0
+        }
+        // Stable ties preserve legacy ordering. No invented phonetic aliases,
+        // recency shuffle, history scan, retrieval service or extra LLM call.
+        struct RankedTerm {
+            let index: Int
+            let term: String
+            let rank: Int
+        }
+        var ordered: [RankedTerm] = []
+        for (index, term) in vocabulary.enumerated() {
+            ordered.append(RankedTerm(index: index, term: term, rank: priority(term)))
+        }
+        ordered.sort { (lhs: RankedTerm, rhs: RankedTerm) -> Bool in
+            if lhs.rank == rhs.rank { return lhs.index < rhs.index }
+            return lhs.rank > rhs.rank
+        }
+        for item in ordered {
+            let index = item.index, rawTerm = item.term
             let term = rawTerm.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !term.isEmpty else {
                 exclude(index, for: "empty")

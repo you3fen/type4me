@@ -129,10 +129,19 @@ enum HotwordStorage {
     /// Persist user hotwords and surface file-system failures to callers that
     /// need all-or-nothing behavior (for example correction learning).
     static func saveOrThrow(_ words: [String]) throws {
+        try saveOrThrow(words, notify: true)
+    }
+
+    /// The explicit overload keeps existing function references source-compatible.
+    static func saveOrThrow(_ words: [String], notify: Bool) throws {
         try writeFileOrThrow(words, to: userFileURL)
         cacheLock.lock()
         cachedUser = nil
         cacheLock.unlock()
+        if notify { notifyDidChange() }
+    }
+
+    static func notifyDidChange() {
         NotificationCenter.default.post(name: didChangeNotification, object: nil)
         SenseVoiceServerManager.syncHotwordsAndRestart()
         // Sync to Volcengine cloud table if configured

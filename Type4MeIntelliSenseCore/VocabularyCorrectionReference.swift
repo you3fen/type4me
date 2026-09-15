@@ -9,19 +9,26 @@ public struct VocabularyCorrectionReference: Codable, Equatable, Sendable, Ident
     public let bundleIdentifier: String
     public let sourceRecordID: String
     public let confirmedAt: Date
+    /// Absent in old files: preserve the original App scope. Old builds ignore
+    /// this field and continue restricting the reference to its origin App.
+    public let sharedAcrossApps: Bool?
 
     public init(id: String = UUID().uuidString, wrongText: String, correctedText: String,
-                bundleIdentifier: String, sourceRecordID: String, confirmedAt: Date = Date()) {
+                bundleIdentifier: String, sourceRecordID: String, confirmedAt: Date = Date(),
+                sharedAcrossApps: Bool? = nil) {
         self.id = id
         self.wrongText = wrongText.trimmingCharacters(in: .whitespacesAndNewlines)
         self.correctedText = correctedText.trimmingCharacters(in: .whitespacesAndNewlines)
         self.bundleIdentifier = bundleIdentifier
         self.sourceRecordID = sourceRecordID
         self.confirmedAt = confirmedAt
+        self.sharedAcrossApps = sharedAcrossApps
     }
 
     public var comparisonKey: String {
-        [bundleIdentifier, wrongText, correctedText].map { $0.lowercased() }.joined(separator: "\u{0}")
+        [sharedAcrossApps == true ? "shared" : bundleIdentifier.lowercased(),
+         VocabularyTermIdentity.triggerKey(wrongText),
+         VocabularyTermIdentity.spellingKey(correctedText)].joined(separator: "\u{0}")
     }
 
     public var isValid: Bool {
@@ -29,7 +36,7 @@ public struct VocabularyCorrectionReference: Codable, Equatable, Sendable, Ident
             && Self.isSafeTerm(wrongText) && Self.isSafeTerm(correctedText)
     }
 
-    private static func isSafeTerm(_ text: String) -> Bool {
+    public static func isSafeTerm(_ text: String) -> Bool {
         guard (2...64).contains(text.count), text.contains(where: \.isLetter),
               text.split(whereSeparator: \.isWhitespace).count <= 5,
               !text.contains(where: \.isNewline),
@@ -49,14 +56,23 @@ public enum VocabularyCorrectionPolicy {
         guard let context, let bundle = context.bundleIdentifier,
               context.availability != .blacklisted, context.availability != .sensitive
         else { return [] }
-        let scoped = references.filter { $0.isValid && $0.bundleIdentifier == bundle }
-        let groups = Dictionary(grouping: scoped, by: { $0.wrongText.lowercased() })
+        let eligible = references.filter {
+            $0.isValid && ($0.sharedAcrossApps == true || $0.bundleIdentifier == bundle)
+        }
+        // An explicit App-specific observation overrides shared observations of
+        // the same trigger; conflicts within the winning scope still abstain.
+        let localKeys = Set(eligible.filter { $0.sharedAcrossApps != true }
+            .map { VocabularyTermIdentity.triggerKey($0.wrongText) })
+        let scoped = eligible.filter {
+            $0.sharedAcrossApps != true || !localKeys.contains(VocabularyTermIdentity.triggerKey($0.wrongText))
+        }
+        let groups = Dictionary(grouping: scoped, by: { VocabularyTermIdentity.triggerKey($0.wrongText) })
         var result: [VocabularyCorrectionReference] = []
         var seen = Set<String>()
         var characters = 0
         for ref in scoped.sorted(by: { $0.confirmedAt > $1.confirmedAt }) {
             guard result.count < 12, seen.insert(ref.comparisonKey).inserted,
-                  Set((groups[ref.wrongText.lowercased()] ?? []).map { $0.correctedText.lowercased() }).count == 1,
+                  Set((groups[VocabularyTermIdentity.triggerKey(ref.wrongText)] ?? []).map { $0.correctedText.lowercased() }).count == 1,
                   !input.localizedCaseInsensitiveContains(ref.correctedText),
                   let source = uniqueRange(of: ref.wrongText, in: input),
                   !isProtected(source, in: input)
@@ -94,11 +110,9 @@ public enum VocabularyCorrectionPolicy {
     }
 
     private static func uniqueRange(of term: String, in text: String) -> Range<String.Index>? {
-        let chars = term.filter { !$0.isWhitespace }
-        let core = chars.map { NSRegularExpression.escapedPattern(for: String($0)) }.joined(separator: #"\s*"#)
         // Underscores belong to identifiers; Han/Latin transitions are valid
         // dictation boundaries. File/path/quote protection is checked separately.
-        guard let regex = try? NSRegularExpression(pattern: "(?<![A-Za-z0-9_])" + core + "(?![A-Za-z0-9_])", options: [.caseInsensitive]) else { return nil }
+        guard let regex = try? NSRegularExpression(pattern: VocabularyTermIdentity.pattern(term), options: [.caseInsensitive]) else { return nil }
         let hits = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
         guard hits.count == 1 else { return nil }
         return Range(hits[0].range, in: text)

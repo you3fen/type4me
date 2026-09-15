@@ -9,7 +9,7 @@ private final class CorrectionLearningPanelState: ObservableObject {
         case saveFailed
     }
 
-    @Published var alwaysReplace = false
+    @Published var learningScope: CorrectionLearningScope = .softReference
     @Published var alreadyKnown = false
     @Published var candidate: CorrectionCandidate?
     @Published var status: Status = .candidate
@@ -72,7 +72,7 @@ final class CorrectionLearningPanelController {
     private var generation = 0
 
     init() {
-        let frame = NSRect(x: 0, y: 0, width: 500, height: 230)
+        let frame = NSRect(x: 0, y: 0, width: 500, height: 290)
         panel = CorrectionLearningPanel(contentRect: frame)
         let hosting = NSHostingView(rootView: CorrectionLearningCardView(state: state))
         hosting.frame = frame
@@ -89,7 +89,7 @@ final class CorrectionLearningPanelController {
         generation &+= 1
         lifecycleTask?.cancel()
         state.candidate = candidate
-        state.alwaysReplace = false
+        state.learningScope = .softReference
         state.alreadyKnown = false
         state.status = .candidate
         state.remainingSeconds = 12
@@ -217,12 +217,11 @@ private struct CorrectionLearningCardView: View {
                 Spacer()
 
                 if state.status != .learned {
-                    Toggle(L("始终全局替换（所有模式）", "Always replace globally (all modes)"), isOn: $state.alwaysReplace)
-                        .toggleStyle(.checkbox)
+                    CorrectionSaveOptions(selection: $state.learningScope, allowsAppScope: true)
                         .font(.system(size: 11))
                         .padding(.bottom, 6)
                     HStack(spacing: 10) {
-                        Text(CorrectionLearningCardCopy.detail(scope: state.alwaysReplace ? .hotwordAndMapping : .softReference, language: language))
+                        Text(CorrectionLearningCardCopy.detail(scope: state.learningScope, language: language))
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(secondaryText)
                             .lineLimit(1)
@@ -236,7 +235,7 @@ private struct CorrectionLearningCardView: View {
                         )
 
                         Button(state.status == .saveFailed ? L("重试", "Retry") : L("添加", "Add")) {
-                            state.onLearn?(state.alwaysReplace ? .hotwordAndMapping : .softReference)
+                            state.onLearn?(state.learningScope)
                         }
                         .buttonStyle(CorrectionCardButtonStyle(isPrimary: true, theme: theme))
                     }
@@ -366,6 +365,8 @@ enum CorrectionLearningCardCopy {
     static func detail(scope: CorrectionLearningScope, language: String) -> String {
         let english = language == "en"
         switch scope {
+        case .sharedReference:
+            return english ? "Shared spelling reference; not a forced rule" : "跨应用共享纠错参考，不强制替换"
         case .softReference:
             return english ? "App-scoped spelling reference; not a forced rule" : "记住此应用中的纠错参考，不强制替换"
         case .hotwordOnly:

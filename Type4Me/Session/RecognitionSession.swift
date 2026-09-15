@@ -478,7 +478,7 @@ actor RecognitionSession {
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    private func personalVocabulary(for snapshot: IntelliSenseContextSnapshot) -> [String] {
+    private func personalVocabulary(for snapshot: IntelliSenseContextSnapshot, text: String) -> [String] {
         guard snapshot.availability != .blacklisted, snapshot.availability != .sensitive else {
             DebugFileLogger.log("vocabulary prompt session=\(diagnosticSessionID) excluded=contextPrivacy")
             return []
@@ -487,7 +487,9 @@ actor RecognitionSession {
             personalVocabularySnapshot = HotwordStorage.loadEffective()
         }
         let words = personalVocabularySnapshot ?? []
-        let selection = IntelliSensePromptBuilder.selectPersonalVocabulary(words)
+        let references = correctionReferences(for: snapshot, text: text)
+        let selection = IntelliSensePromptBuilder.selectPersonalVocabulary(words, text: text,
+            preferredSpellings: references.map(\.correctedText))
         let reasons = selection.excludedIndicesByReason.keys.sorted().map {
             "\($0):\(selection.excludedIndicesByReason[$0] ?? [])"
         }.joined(separator: ",")
@@ -3169,7 +3171,7 @@ actor RecognitionSession {
                 context: context.snapshot,
                 settings: context.settings,
                 expressionProfile: context.expressionProfile,
-                personalVocabulary: personalVocabulary(for: context.snapshot),
+                personalVocabulary: personalVocabulary(for: context.snapshot, text: text ?? ""),
                 correctionReferences: correctionReferences(for: context.snapshot, text: text ?? "")
             ))
         }
@@ -3221,7 +3223,7 @@ actor RecognitionSession {
             context: snapshot,
             settings: settings,
             expressionProfile: expressionProfile,
-            personalVocabulary: personalVocabulary(for: snapshot),
+            personalVocabulary: personalVocabulary(for: snapshot, text: text ?? ""),
             correctionReferences: correctionReferences(for: snapshot, text: text ?? "")
         ))
     }

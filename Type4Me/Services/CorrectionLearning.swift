@@ -68,39 +68,6 @@ struct TrackedInjectionResult: @unchecked Sendable {
     }
 }
 
-struct CorrectionCandidate: Equatable, Sendable {
-    let wrongText: String
-    let correctedText: String
-    let sourceRecordID: String
-    let bundleIdentifier: String
-    let learningScope: CorrectionLearningScope
-
-    init(
-        wrongText: String,
-        correctedText: String,
-        sourceRecordID: String,
-        bundleIdentifier: String,
-        learningScope: CorrectionLearningScope = .softReference
-    ) {
-        self.wrongText = wrongText
-        self.correctedText = correctedText
-        self.sourceRecordID = sourceRecordID
-        self.bundleIdentifier = bundleIdentifier
-        self.learningScope = learningScope
-    }
-}
-
-enum CorrectionLearningScope: String, Equatable, Sendable {
-    /// Default: explicitly confirmed app-scoped evidence, not a forced rule.
-    case softReference
-    /// Explicit opt-in only: the user requests an unconditional global rule.
-    case hotwordAndMapping
-
-    /// A user may confirm the preferred word without promoting an uncertain
-    /// observed phrase into a global replacement rule.
-    case hotwordOnly
-}
-
 enum CorrectionDiffRejection: String, Equatable, Sendable {
     case unchanged
     case invalidRange
@@ -526,113 +493,22 @@ enum CorrectionDiffAnalyzer {
     }
 }
 
-struct CorrectionMapping: Equatable, Sendable {
-    let trigger: String
-    let replacement: String
-}
-
-protocol CorrectionVocabularyPersisting {
-    func loadHotwords() -> [String]
-    func loadMappings() -> [CorrectionMapping]
-    func saveHotwords(_ words: [String]) throws
-    func saveMappings(_ mappings: [CorrectionMapping]) throws
-    func loadReferences() throws -> [VocabularyCorrectionReference]
-    func saveReferences(_ references: [VocabularyCorrectionReference]) throws
-}
-
-extension CorrectionVocabularyPersisting {
-    func loadReferences() throws -> [VocabularyCorrectionReference] { throw CorrectionReferenceError.unsupportedPersistence }
-    func saveReferences(_ references: [VocabularyCorrectionReference]) throws { throw CorrectionReferenceError.unsupportedPersistence }
-}
-
 struct Type4MeCorrectionVocabularyPersistence: CorrectionVocabularyPersisting {
     func loadReferences() throws -> [VocabularyCorrectionReference] { try CorrectionReferenceStorage.load() }
     func saveReferences(_ references: [VocabularyCorrectionReference]) throws { try CorrectionReferenceStorage.save(references) }
+    func didCommitHotwords() { HotwordStorage.notifyDidChange() }
     func loadHotwords() -> [String] { HotwordStorage.load() }
     func loadMappings() -> [CorrectionMapping] {
         SnippetStorage.load().map { CorrectionMapping(trigger: $0.trigger, replacement: $0.value) }
     }
-    func saveHotwords(_ words: [String]) throws { try HotwordStorage.saveOrThrow(words) }
+    func saveHotwords(_ words: [String]) throws { try HotwordStorage.saveOrThrow(words, notify: false) }
     func saveMappings(_ mappings: [CorrectionMapping]) throws {
         try SnippetStorage.saveOrThrow(mappings.map { (trigger: $0.trigger, value: $0.replacement) })
     }
 }
 
-enum CorrectionLearningOutcome: Equatable { case saved, alreadyKnown }
-
-struct CorrectionLearningStore {
-    let persistence: any CorrectionVocabularyPersisting
-
-    init(persistence: any CorrectionVocabularyPersisting = Type4MeCorrectionVocabularyPersistence()) {
-        self.persistence = persistence
-    }
-
-    @discardableResult
-    func learn(_ candidate: CorrectionCandidate) throws -> CorrectionLearningOutcome {
-        let oldHotwords = persistence.loadHotwords()
-
-        var newHotwords = oldHotwords
-        if !newHotwords.contains(where: { $0.caseInsensitiveCompare(candidate.correctedText) == .orderedSame }) {
-            newHotwords.append(candidate.correctedText)
-        }
-
-        let hotwordsChanged = newHotwords != oldHotwords
-        if candidate.learningScope == .softReference {
-            let reference = VocabularyCorrectionReference(
-                wrongText: candidate.wrongText, correctedText: candidate.correctedText,
-                bundleIdentifier: candidate.bundleIdentifier, sourceRecordID: candidate.sourceRecordID
-            )
-            guard reference.isValid else { throw CorrectionReferenceError.invalidReference }
-            let oldReferences = try persistence.loadReferences()
-            let alreadyKnown = oldReferences.contains { $0.comparisonKey == reference.comparisonKey }
-            guard hotwordsChanged || !alreadyKnown else { return .alreadyKnown }
-            if hotwordsChanged { try persistence.saveHotwords(newHotwords) }
-            do {
-                if !alreadyKnown { try persistence.saveReferences(oldReferences + [reference]) }
-            } catch {
-                if hotwordsChanged { try? persistence.saveHotwords(oldHotwords) }
-                throw error
-            }
-            return .saved
-        }
-        if candidate.learningScope == .hotwordOnly {
-            if hotwordsChanged { try persistence.saveHotwords(newHotwords) }
-            return hotwordsChanged ? .saved : .alreadyKnown
-        }
-
-        let oldMappings = persistence.loadMappings()
-
-        var newMappings = oldMappings
-        if let index = newMappings.firstIndex(where: {
-            $0.trigger.caseInsensitiveCompare(candidate.wrongText) == .orderedSame
-        }) {
-            newMappings[index] = CorrectionMapping(
-                trigger: candidate.wrongText,
-                replacement: candidate.correctedText
-            )
-        } else {
-            newMappings.append(CorrectionMapping(
-                trigger: candidate.wrongText,
-                replacement: candidate.correctedText
-            ))
-        }
-
-        let mappingsChanged = newMappings != oldMappings
-        guard hotwordsChanged || mappingsChanged else { return .alreadyKnown }
-
-        do {
-            if hotwordsChanged { try persistence.saveHotwords(newHotwords) }
-            do {
-                if mappingsChanged { try persistence.saveMappings(newMappings) }
-            } catch {
-                if hotwordsChanged { try? persistence.saveHotwords(oldHotwords) }
-                throw error
-            }
-        } catch {
-            throw error
-        }
-        return .saved
-    }
+extension CorrectionLearningStore {
+    init() { self.init(persistence: Type4MeCorrectionVocabularyPersistence()) }
 }
 
 struct PostInjectionLearningOptions: Equatable, Sendable {

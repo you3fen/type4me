@@ -89,6 +89,12 @@ public enum IntelliSenseOutputValidator {
         guard !trimmed.isEmpty else { return .reject(.emptyOutput) }
         guard !trimmed.contains("```") else { return .reject(.codeFence) }
         guard !looksLikeToolCall(trimmed) else { return .reject(.toolCall) }
+        guard VocabularyLiteralProtection.preserved(input: input, candidate: trimmed) else {
+            return .reject(.protectedTokenChanged)
+        }
+        guard !VocabularyLiteralProtection.deletesOnlyNegation(input: input, candidate: trimmed) else {
+            return .reject(.negationChanged)
+        }
         guard preservesLeadingResponseMarker(input: input, output: trimmed) else {
             return .reject(.responseMarkerChanged)
         }

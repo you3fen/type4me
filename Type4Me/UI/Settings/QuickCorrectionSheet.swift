@@ -8,6 +8,7 @@ struct QuickCorrectionSheet: View {
     /// Why the delivered text differs from `text`, for a history record.
     var provenance: CorrectionProvenance?
     var onComplete: (() -> Void)?
+    var sourceRecordID: String = "manual-confirmation"
 
     @Environment(\.dismiss) private var dismiss
 
@@ -19,6 +20,9 @@ struct QuickCorrectionSheet: View {
     @State private var dragSelectMode: Bool? = nil
     @State private var preDragSelection: Set<Int> = []
     @State private var showSuccess = false
+    @State private var learningScope: CorrectionLearningScope = .hotwordOnly
+    @State private var saveError: String?
+    @State private var alreadyKnown = false
 
     private var selectedText: String {
         selectedChars.sorted().compactMap { idx in
@@ -204,6 +208,11 @@ struct QuickCorrectionSheet: View {
                 }
                 .padding(.top, TF.spacingMD)
 
+                CorrectionSaveOptions(selection: $learningScope)
+                    .padding(.top, TF.spacingSM)
+                if let saveError {
+                    Text(saveError).font(.caption).foregroundStyle(.red)
+                }
                 HStack {
                     Spacer()
 
@@ -238,7 +247,7 @@ struct QuickCorrectionSheet: View {
             }
         }
         .padding(20)
-        .frame(minWidth: 460, maxWidth: 460, minHeight: 360, maxHeight: 480)
+        .frame(minWidth: 460, maxWidth: 460, minHeight: 440, maxHeight: 620)
         .background(TF.settingsCardAlt)
         .overlay {
             if showSuccess {
@@ -246,7 +255,7 @@ struct QuickCorrectionSheet: View {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 28))
                         .foregroundStyle(TF.settingsAccentGreen)
-                    Text(L("添加成功", "Added"))
+                    Text(alreadyKnown ? L("已记录，无需重复添加", "Already recorded") : L("已保存", "Saved"))
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(TF.settingsText)
                 }
@@ -298,24 +307,18 @@ struct QuickCorrectionSheet: View {
         guard canAdd else { return }
         let correct = correctText.trimmingCharacters(in: .whitespaces)
         let wrong = selectedText
-        var current = SnippetStorage.load()
-        let didAdd: Bool
-        if !current.contains(where: { $0.trigger.lowercased() == wrong.lowercased() }) {
-            current.append((trigger: wrong, value: correct))
-            SnippetStorage.save(current)
-            didAdd = true
-        } else {
-            didAdd = false
-        }
-        onComplete?()
-        withAnimation(.spring(duration: 0.3)) { showSuccess = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            dismiss()
-            if didAdd {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    NotificationCenter.default.post(name: .navigateToVocabulary, object: correct)
-                }
-            }
+        do {
+            let outcome = try CorrectionLearningStore().learn(CorrectionCandidate(
+                wrongText: wrong, correctedText: correct, sourceRecordID: sourceRecordID,
+                bundleIdentifier: "type4me:manual-confirmation", learningScope: learningScope
+            ))
+            alreadyKnown = outcome == .alreadyKnown
+            saveError = nil
+            onComplete?()
+            withAnimation(.spring(duration: 0.3)) { showSuccess = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { dismiss() }
+        } catch {
+            saveError = CorrectionSaveFeedback.failure(error)
         }
     }
 }

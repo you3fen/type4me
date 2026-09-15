@@ -1,4 +1,5 @@
 import Foundation
+import Type4MeIntelliSenseCore
 import os
 #if canImport(AppKit)
 import AppKit
@@ -492,11 +493,7 @@ enum SnippetStorage {
     /// Strips all whitespace from trigger, then inserts `\s*` between each character.
     /// Uses ASCII-only word boundaries (not `\b`) so CJK/Latin boundaries work correctly.
     private static func buildFlexPattern(_ trigger: String) -> String {
-        let chars = trigger.filter { !$0.isWhitespace }
-        guard !chars.isEmpty else { return NSRegularExpression.escapedPattern(for: trigger) }
-        let core = chars.map { NSRegularExpression.escapedPattern(for: String($0)) }
-            .joined(separator: "\\s*")
-        return "(?<![a-zA-Z0-9])" + core + "(?![a-zA-Z0-9])"
+        VocabularyTermIdentity.pattern(trigger, protectsIdentifiers: false)
     }
 
     // MARK: - File I/O helpers

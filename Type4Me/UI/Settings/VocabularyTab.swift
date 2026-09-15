@@ -138,6 +138,8 @@ private struct AddAppButtonAnchorKey: PreferenceKey {
 }
 
 struct VocabularyTab: View {
+    @State private var vocabularySaveError: String?
+    @State private var namePendingDeletion: String?
 
     private enum VocabularyInputFocus: Hashable {
         case hotword
@@ -247,7 +249,7 @@ struct VocabularyTab: View {
                     return
                 }
                 guard let replacement = note.object as? String else { return }
-                // Quick Correction always writes to the global snippet store.
+                // Legacy snippet navigation still targets the global store.
                 revealSnippetGroup(replacement: replacement, scope: nil, token: token, proxy: proxy)
             }
             .onChange(of: pendingReveal) { _, target in
@@ -265,6 +267,19 @@ struct VocabularyTab: View {
             }
         } // ScrollViewReader
         .sheet(isPresented: $showsCorrectionReferences) { CorrectionReferencesView() }
+        .alert(L("名称保存失败", "Could not save name"), isPresented: Binding(
+            get: { vocabularySaveError != nil }, set: { if !$0 { vocabularySaveError = nil } }
+        )) { Button(L("确定", "OK"), role: .cancel) {} }
+        message: { Text(vocabularySaveError ?? "") }
+        .confirmationDialog(L("删除这个名称和对应的纠错参考？现有快捷展开保持不变。", "Delete this name and its spelling references? Quick expansions remain unchanged."), isPresented: Binding(
+            get: { namePendingDeletion != nil }, set: { if !$0 { namePendingDeletion = nil } }
+        ), titleVisibility: .visible) {
+            Button(L("删除名称及参考", "Delete name and references"), role: .destructive) {
+                if let word = namePendingDeletion { deleteCanonicalName(word) }
+                namePendingDeletion = nil
+            }
+            Button(L("取消", "Cancel"), role: .cancel) { namePendingDeletion = nil }
+        }
         .onAppear {
             hotwords = HotwordStorage.load()
             snippets = SnippetStorage.load()
@@ -1198,11 +1213,17 @@ struct VocabularyTab: View {
     }
 
     private func removeHotword(_ word: String) {
-        hotwords.removeAll { $0 == word }
-        HotwordStorage.save(hotwords)
-        if editingHotword == word {
-            cancelHotwordEdit()
-        }
+        // Confirm the wider name operation; never silently leave a reference
+        // that can bring a supposedly deleted canonical spelling back.
+        namePendingDeletion = word
+    }
+
+    private func deleteCanonicalName(_ word: String) {
+        do {
+            _ = try CorrectionLearningStore().removeCanonical(word)
+            hotwords = HotwordStorage.load()
+            if editingHotword == word { cancelHotwordEdit() }
+        } catch { vocabularySaveError = CorrectionSaveFeedback.failure(error) }
     }
 
     private func startHotwordEdit(_ word: String) {
@@ -1231,9 +1252,15 @@ struct VocabularyTab: View {
             return
         }
 
-        hotwords[index] = updated
-        HotwordStorage.save(hotwords)
-        cancelHotwordEdit()
+        _ = index // Keep the existing stale-edit check above.
+        do {
+            _ = try CorrectionLearningStore().renameCanonical(original, to: updated)
+            hotwords = HotwordStorage.load()
+            vocabularySaveError = nil
+            cancelHotwordEdit()
+        } catch {
+            vocabularySaveError = CorrectionSaveFeedback.failure(error)
+        }
     }
 
     private func addSnippet() {

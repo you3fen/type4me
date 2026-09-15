@@ -601,7 +601,7 @@ struct HistoryTab: View {
             }
         }
         .sheet(item: $correctionRecord) { record in
-            QuickCorrectionSheet(text: record.rawText, provenance: CorrectionProvenance(record: record))
+            QuickCorrectionSheet(text: record.rawText, provenance: CorrectionProvenance(record: record), sourceRecordID: record.id)
         }
         .alert(L("删除所选记录", "Delete selected records"), isPresented: $showBatchDeleteConfirm) {
             Button(L("取消", "Cancel"), role: .cancel) {}

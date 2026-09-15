@@ -14,6 +14,9 @@ struct SmartCorrectionSheet: View {
     }
 
     @State private var phase: Phase = .input
+    @State private var learningScope: CorrectionLearningScope = .hotwordOnly
+    @State private var confirmedWrong = ""
+    @State private var confirmedCorrect = ""
 
     // MARK: - Input state
 
@@ -59,7 +62,10 @@ struct SmartCorrectionSheet: View {
     }
 
     private var selectedCount: Int {
-        snippetSuggestions.filter { $0.isSelected && !$0.isDuplicate }.count
+        // The explicitly entered pair is always part of this confirmation;
+        // no generated alias has to be selected to save that pair.
+        1 + (learningScope == .hotwordAndMapping
+            ? snippetSuggestions.filter { $0.isSelected && !$0.isDuplicate }.count : 0)
         + hotwordSuggestions.filter { $0.isSelected && !$0.isDuplicate }.count
     }
 
@@ -83,6 +89,11 @@ struct SmartCorrectionSheet: View {
             Spacer()
 
             Divider().opacity(0.2)
+            CorrectionSaveOptions(selection: $learningScope)
+                .padding(.top, TF.spacingSM)
+            if let errorMessage, phase == .preview {
+                Text(errorMessage).font(.caption).foregroundStyle(.red)
+            }
             bottomButtons
                 .padding(.top, TF.spacingMD)
         }
@@ -364,13 +375,16 @@ struct SmartCorrectionSheet: View {
 
         ScrollView {
             VStack(alignment: .leading, spacing: TF.spacingMD) {
+                Text(L("预测变体不会自动成为纠错参考。只有明确选择“始终全局替换”才保存选中的展开规则。",
+                       "Predicted variants are not confirmed memories. Selected expansions are saved only with Always replace globally."))
+                    .font(.caption).foregroundStyle(.secondary)
                 // Snippets
                 HStack {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.left.arrow.right")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(TF.settingsAccentAmber)
-                        Text(L("片段替换建议", "SNIPPET SUGGESTIONS").uppercased())
+                        Text(L("预测变体（未确认）", "PREDICTED VARIANTS").uppercased())
                             .font(.system(size: 11, weight: .semibold))
                             .tracking(1.2)
                             .foregroundStyle(TF.settingsTextTertiary)
@@ -505,6 +519,11 @@ struct SmartCorrectionSheet: View {
         HStack(spacing: TF.spacingMD) {
             switch phase {
             case .input:
+                Button(L("记住这次纠错", "Remember correction")) {
+                    confirmedWrong = expandedHistoryText != nil ? selectedText : wrongText
+                    confirmedCorrect = correctText
+                    saveConfirmation()
+                }.disabled(!canGenerate)
                 Spacer()
 
                 Button { dismiss() } label: {
@@ -524,7 +543,7 @@ struct SmartCorrectionSheet: View {
                     HStack(spacing: 4) {
                         Image(systemName: "wand.and.stars")
                             .font(.system(size: 11))
-                        Text(L("生成变体", "Generate Variants"))
+                        Text(L("生成变体（高级）", "Generate variants (advanced)"))
                     }
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(TF.settingsOnStrong)
@@ -586,7 +605,7 @@ struct SmartCorrectionSheet: View {
                 Button {
                     saveAndDismiss()
                 } label: {
-                    Text(L("添加选中项 (\(selectedCount))", "Add Selected (\(selectedCount))"))
+                    Text(learningScope == .hotwordAndMapping ? L("保存所选展开", "Save selected expansions") : L("保存这次确认", "Save this confirmation"))
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(TF.settingsOnStrong)
                         .padding(.horizontal, 16)
@@ -626,6 +645,8 @@ struct SmartCorrectionSheet: View {
         }
         let correct = correctText.trimmingCharacters(in: .whitespaces)
 
+        confirmedWrong = wrong
+        confirmedCorrect = correct
         withAnimation(TF.easeQuick) { phase = .generating }
 
         generationTask = Task {
@@ -635,7 +656,11 @@ struct SmartCorrectionSheet: View {
                 if Task.isCancelled { return }
 
                 await MainActor.run {
-                    snippetSuggestions = result.snippets
+                    snippetSuggestions = result.snippets.map { suggestion in
+                        var copy = suggestion
+                        copy.isSelected = false
+                        return copy
+                    }
                     hotwordSuggestions = result.hotwords
                     hotwordReason = result.hotwordReason
                     withAnimation(TF.easeQuick) { phase = .preview }
@@ -657,21 +682,31 @@ struct SmartCorrectionSheet: View {
         }
     }
 
-    private func saveAndDismiss() {
-        var currentSnippets = SnippetStorage.load()
-        for s in snippetSuggestions where s.isSelected && !s.isDuplicate {
-            currentSnippets.append((trigger: s.trigger, value: s.replacement))
-        }
-        SnippetStorage.save(currentSnippets)
+    private func saveAndDismiss() { saveConfirmation(includeSuggestions: true) }
 
-        var currentHotwords = HotwordStorage.load()
-        for h in hotwordSuggestions where h.isSelected && !h.isDuplicate {
-            currentHotwords.append(h.word)
+    private func saveConfirmation(includeSuggestions: Bool = false) {
+        let sourceID = "manual-confirmation"
+        let origin = "type4me:manual-confirmation" // Not an inferred target App.
+        var candidates = [CorrectionCandidate(
+            wrongText: confirmedWrong, correctedText: confirmedCorrect,
+            sourceRecordID: sourceID, bundleIdentifier: origin, learningScope: learningScope
+        )]
+        if includeSuggestions && learningScope == .hotwordAndMapping {
+            candidates += snippetSuggestions.filter { $0.isSelected && !$0.isDuplicate }.map {
+                CorrectionCandidate(wrongText: $0.trigger, correctedText: $0.replacement,
+                    sourceRecordID: sourceID, bundleIdentifier: origin, learningScope: .hotwordAndMapping)
+            }
         }
-        HotwordStorage.save(currentHotwords)
-
-        onComplete?()
-        dismiss()
+        let words = includeSuggestions
+            ? hotwordSuggestions.filter { $0.isSelected && !$0.isDuplicate }.map(\.word) : []
+        do {
+            _ = try CorrectionLearningStore().learn(candidates, hotwords: words)
+            errorMessage = nil
+            onComplete?()
+            dismiss()
+        } catch {
+            errorMessage = CorrectionSaveFeedback.failure(error)
+        }
     }
 
     // MARK: - Helpers
