@@ -1,12 +1,28 @@
 import Foundation
 
+enum ImmediateCorrectionCandidateResult: Equatable, Sendable {
+    case candidate(
+        wrongText: String,
+        correctedText: String,
+        learningScope: CorrectionLearningScope
+    )
+    case rejected(CorrectionDiffRejection)
+}
+
 enum ImmediateCorrectionAnalyzer {
     static func analyze(
         original: String,
         edited: String,
         chineseSegmenter: any ChineseWordSegmenting = HybridChineseWordSegmenter.shared,
-        confirmedMappings: [CorrectionMapping]? = nil
+        confirmedMappings: [CorrectionMapping]? = nil,
+        diagnosticRecordID: String? = nil
     ) async -> CorrectionDiffResult {
+        func rejected(_ reason: CorrectionDiffRejection, at stage: String) -> CorrectionDiffResult {
+            if let diagnosticRecordID {
+                DebugFileLogger.log("correction strict gate: record=\(diagnosticRecordID) stage=\(stage) reason=\(reason.rawValue)")
+            }
+            return .rejected(reason)
+        }
         let direct = CorrectionDiffAnalyzer.analyze(
             baseline: original,
             injectedRange: NSRange(original.startIndex..<original.endIndex, in: original),
@@ -15,7 +31,7 @@ enum ImmediateCorrectionAnalyzer {
         let classification = UserEditClassifier.classify(original: original, edited: edited)
         if case .candidate(let wrong, let corrected) = direct {
             guard classification == .lexicalCorrection else {
-                return .rejected(classification == .sensitive ? .sensitiveContent : .invalidCandidate)
+                return rejected(classification == .sensitive ? .sensitiveContent : .invalidCandidate, at: "editClassification")
             }
             if let mixedBoundary = mixedScriptBoundary(
                 original: original,
@@ -25,7 +41,7 @@ enum ImmediateCorrectionAnalyzer {
             ) {
                 let spans = await chineseSegmenter.tokenSpans(in: mixedBoundary.text)
                 guard acceptsChineseBoundary(mixedBoundary.range, spans: spans) else {
-                    return .rejected(.invalidCandidate)
+                    return rejected(.invalidCandidate, at: "chineseBoundary")
                 }
             }
             guard hasHighCorrectionAffinity(
@@ -33,7 +49,7 @@ enum ImmediateCorrectionAnalyzer {
                 corrected: corrected,
                 confirmedMappings: confirmedMappings
             ) else {
-                return .rejected(.lowAffinity)
+                return rejected(.lowAffinity, at: "affinity")
             }
             return direct
         }
@@ -43,7 +59,10 @@ enum ImmediateCorrectionAnalyzer {
               diff.newText.count == 1,
               isHanOnly(diff.oldText),
               isHanOnly(diff.newText)
-        else { return direct }
+        else {
+            if case .rejected(let reason) = direct { return rejected(reason, at: "diff") }
+            return direct
+        }
 
         async let oldSpans = chineseSegmenter.tokenSpans(in: original)
         async let newSpans = chineseSegmenter.tokenSpans(in: edited)
@@ -76,17 +95,65 @@ enum ImmediateCorrectionAnalyzer {
         let wrong = substring(in: original, start: selected.start, length: selected.length),
         let corrected = substring(in: edited, start: selected.start, length: selected.length),
         wrong != corrected
-        else { return direct }
+        else { return rejected(.ambiguousCJKReplacement, at: "chineseBoundary") }
 
         guard hasHighCorrectionAffinity(
             wrong: wrong,
             corrected: corrected,
             confirmedMappings: confirmedMappings
         ) else {
-            return .rejected(.lowAffinity)
+            return rejected(.lowAffinity, at: "affinity")
         }
 
         return .candidate(wrongText: wrong, correctedText: corrected)
+    }
+
+    /// The immediate observer may offer a narrowly-scoped confirmation for a
+    /// single mixed-script lexical edit that misses Han segmentation or affinity. It deliberately
+    /// records an app-scoped reference after confirmation; it never
+    /// promotes a high similarity score into global replacement consent.
+    static func analyzeForImmediateCandidate(
+        original: String,
+        edited: String,
+        chineseSegmenter: any ChineseWordSegmenting = HybridChineseWordSegmenter.shared,
+        confirmedMappings: [CorrectionMapping]? = nil,
+        diagnosticRecordID: String? = nil
+    ) async -> ImmediateCorrectionCandidateResult {
+        let strict = await analyze(
+            original: original,
+            edited: edited,
+            chineseSegmenter: chineseSegmenter,
+            confirmedMappings: confirmedMappings,
+            diagnosticRecordID: diagnosticRecordID
+        )
+        if case .candidate(let wrong, let corrected) = strict {
+            return .candidate(
+                wrongText: wrong,
+                correctedText: corrected,
+                learningScope: .softReference
+            )
+        }
+        guard isImmediateSuggestionEligibleRejection(strict),
+              UserEditClassifier.classify(original: original, edited: edited) == .lexicalCorrection,
+              case .candidate(let wrong, let corrected) = CorrectionDiffAnalyzer.analyze(
+                  baseline: original,
+                  injectedRange: NSRange(original.startIndex..<original.endIndex, in: original),
+                  current: edited
+              ),
+              isHanOnly(wrong),
+              isLatinTechnicalToken(corrected),
+              let diff = minimalReplacement(original: original, edited: edited),
+              trimBoundaryWhitespace(diff.oldText) == wrong,
+              trimBoundaryWhitespace(diff.newText) == corrected
+        else {
+            return rejectedResult(from: strict)
+        }
+
+        return .candidate(
+            wrongText: wrong,
+            correctedText: corrected,
+            learningScope: .softReference
+        )
     }
 
     private struct ReplacementDiff {
@@ -118,8 +185,8 @@ enum ImmediateCorrectionAnalyzer {
         let correctedIsLatin = isLatinTechnicalToken(corrected)
         guard (wrongIsHan && correctedIsLatin) || (wrongIsLatin && correctedIsHan),
               let diff = minimalReplacement(original: original, edited: edited),
-              diff.oldText == wrong,
-              diff.newText == corrected
+              trimBoundaryWhitespace(diff.oldText) == wrong,
+              trimBoundaryWhitespace(diff.newText) == corrected
         else { return nil }
         if wrongIsHan {
             return MixedScriptBoundary(text: original, range: diff.oldRange)
@@ -226,4 +293,32 @@ enum ImmediateCorrectionAnalyzer {
             }
         }
     }
+
+    private static func rejectedResult(
+        from result: CorrectionDiffResult
+    ) -> ImmediateCorrectionCandidateResult {
+        if case .rejected(let reason) = result {
+            return .rejected(reason)
+        }
+        return .rejected(.invalidCandidate)
+    }
+
+    private static func isImmediateSuggestionEligibleRejection(
+        _ result: CorrectionDiffResult
+    ) -> Bool {
+        switch result {
+        case .rejected(.lowAffinity), .rejected(.invalidCandidate):
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func trimBoundaryWhitespace(_ text: String) -> String {
+        guard let first = text.firstIndex(where: { !$0.isWhitespace }),
+              let last = text.lastIndex(where: { !$0.isWhitespace })
+        else { return "" }
+        return String(text[first...last])
+    }
+
 }

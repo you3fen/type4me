@@ -17,19 +17,19 @@ enum KeychainService {
     }()
     private static let keychainScalarService = runningUnderXCTest
         ? "com.type4me.tests.scalar"
-        : "com.type4me.scalar"
+        : AppDataNamespace.keychainPrefix + ".scalar"
     private static let keychainGroupedService = runningUnderXCTest
         ? "com.type4me.tests.grouped"
-        : "com.type4me.grouped"
-    private static let credentialsDirectoryName = runningUnderXCTest ? "Type4MeTests" : "Type4Me"
+        : AppDataNamespace.keychainPrefix + ".grouped"
+    private static let credentialsDirectoryName = runningUnderXCTest ? "Type4MeTests" : AppDataNamespace.directoryName
 
     /// Exposed internally so tests can fail fast instead of ever touching the
     /// production credential namespace or Application Support file.
     static var isUsingTestStorage: Bool { runningUnderXCTest }
     #else
-    private static let keychainScalarService = "com.type4me.scalar"
-    private static let keychainGroupedService = "com.type4me.grouped"
-    private static let credentialsDirectoryName = "Type4Me"
+    private static let keychainScalarService = AppDataNamespace.keychainPrefix + ".scalar"
+    private static let keychainGroupedService = AppDataNamespace.keychainPrefix + ".grouped"
+    private static let credentialsDirectoryName = AppDataNamespace.directoryName
 
     /// Release builds contain no XCTest routing and always use production storage.
     static var isUsingTestStorage: Bool { false }
@@ -710,10 +710,11 @@ enum KeychainService {
     /// Uses file-level merge instead of directory rename, because other init code may create
     /// the new directory before this migration runs.
     private static func migrateAppSupportDirectory() {
+        guard !AppDataNamespace.isPersonal else { return }
         let fm = FileManager.default
         let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let oldDir = appSupport.appendingPathComponent("TypeFlow", isDirectory: true)
-        let newDir = appSupport.appendingPathComponent("Type4Me", isDirectory: true)
+        let newDir = appSupport.appendingPathComponent(AppDataNamespace.directoryName, isDirectory: true)
 
         // Old directory must exist and contain real data (credentials.json is the marker)
         guard fm.fileExists(atPath: oldDir.appendingPathComponent("credentials.json").path) else { return }
@@ -751,6 +752,7 @@ enum KeychainService {
     /// Copy tf_ keys from old com.typeflow.app UserDefaults to current domain.
     /// One-time: skips if already migrated (marker key present).
     private static func migrateUserDefaults() {
+        guard !AppDataNamespace.isPersonal else { return }
         let marker = "tf_migratedFromTypeFlow"
         guard !UserDefaults.standard.bool(forKey: marker) else { return }
 

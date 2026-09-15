@@ -473,7 +473,7 @@ enum SoundFeedback {
             return url
         }
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("Type4Me", isDirectory: true)
+            .appendingPathComponent(AppDataNamespace.directoryName, isDirectory: true)
             .appendingPathComponent("Sounds", isDirectory: true)
         let url = appSupport.appendingPathComponent("\(filename).wav")
         return FileManager.default.fileExists(atPath: url.path) ? url : nil

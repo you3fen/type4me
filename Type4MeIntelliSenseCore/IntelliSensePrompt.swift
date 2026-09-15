@@ -1,5 +1,44 @@
 import Foundation
 
+/// Shared sensitive-content detector for bounded Intelli Sense data inputs.
+/// It intentionally uses the same credential patterns as captured context.
+public enum IntelliSenseSensitiveTextScanner {
+    private static let expressions: [NSRegularExpression] = [
+        #"(?i)\b(?:api[_-]?key|secret|access[_-]?token|refresh[_-]?token|client[_-]?secret)\b\s*[:=]"#,
+        #"(?i)\bBearer\s+[A-Za-z0-9._~+/-]{12,}={0,2}"#,
+        #"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"#,
+        #"-----BEGIN(?: [A-Z0-9]+)? (?:PRIVATE KEY|CERTIFICATE)-----"#,
+        #"\b(?:AKIA|ASIA|AIza|ghp_|github_pat_|sk-|xox[baprs]-)[A-Za-z0-9_\-]{12,}\b"#,
+        #"\b[a-fA-F0-9]{48,}\b"#,
+        #"\b[A-Za-z0-9+/]{64,}={0,2}\b"#,
+        #"(?i)\b(?:password|passwd|verification[_ -]?code|验证码)\b\s*[:=：]"#,
+    ].compactMap { try? NSRegularExpression(pattern: $0) }
+
+    public static func containsSensitiveContent(_ text: String) -> Bool {
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return expressions.contains { $0.firstMatch(in: text, range: range) != nil }
+    }
+}
+
+/// The non-sensitive selection metadata for a personal vocabulary snapshot.
+/// `includedIndices` and every excluded index are zero-based positions in the
+/// caller-provided array, so callers can diagnose inclusion without logging terms.
+public struct PersonalVocabularySelection: Equatable, Sendable {
+    public let terms: [String]
+    public let includedIndices: [Int]
+    public let excludedIndicesByReason: [String: [Int]]
+
+    public init(
+        terms: [String],
+        includedIndices: [Int],
+        excludedIndicesByReason: [String: [Int]]
+    ) {
+        self.terms = terms
+        self.includedIndices = includedIndices
+        self.excludedIndicesByReason = excludedIndicesByReason
+    }
+}
+
 public enum PolicyLevel: String, Equatable, Codable, Sendable {
     case low
     case medium
@@ -56,6 +95,9 @@ public struct ScenePolicy: Equatable, Codable, Sendable {
 }
 
 public enum IntelliSensePromptBuilder {
+    private static let maximumPersonalVocabularyTerms = 20
+    private static let maximumPersonalVocabularyCharacters = 400
+
     public static let baseTemplate = #"""
     # 角色与唯一任务
     你是 Type4Me 的智能感知语音润色器。输入是用户准备写入当前输入框的语音识别文本。你只负责把用户已经口述的内容整理成自然、清晰、可直接发送或保存的文字。
@@ -169,6 +211,25 @@ public enum IntelliSensePromptBuilder {
             additions.append(contextInstructions(input.context))
         }
 
+        if allowsEnhancedAwareness,
+           let vocabulary = personalVocabularyInstructions(input.personalVocabulary) {
+            additions.append(vocabulary)
+        }
+
+        if allowsEnhancedAwareness, let text {
+            let references = VocabularyCorrectionPolicy.select(input.correctionReferences, input: text, context: input.context)
+            if !references.isEmpty {
+                let data = references.map { "- \(escapeData($0.wrongText)) → \(escapeData($0.correctedText))" }.joined(separator: "\n")
+                additions.append("""
+                # 本应用中经用户确认的纠错参考
+                以下是过去的一次写法确认，不是永久替换规则。只有本次上下文也支持同一名称时，才局部校正；歧义、明确保留、引用、代码或路径中保留原词。不得新增未说出的名称，不得改变旁边的数字、版本、金额和否定关系。只返回整理后的正文。
+                <confirmed_spelling_references>
+                \(data)
+                </confirmed_spelling_references>
+                """)
+            }
+        }
+
         if input.settings.expressionLearningEnabled,
            allowsEnhancedAwareness,
            let profile = input.expressionProfile,
@@ -202,8 +263,72 @@ public enum IntelliSensePromptBuilder {
         build(input: IntelliSensePromptInput(
             context: request.context,
             settings: request.settings,
-            expressionProfile: request.expressionProfile
+            expressionProfile: request.expressionProfile,
+            personalVocabulary: request.personalVocabulary,
+            correctionReferences: request.correctionReferences ?? []
         ), text: request.text).replacingOccurrences(of: "{text}", with: escapeData(request.text))
+    }
+
+    private static func personalVocabularyInstructions(_ vocabulary: [String]) -> String? {
+        let selection = selectPersonalVocabulary(vocabulary)
+        guard !selection.terms.isEmpty else { return nil }
+        let data = selection.terms.map { "- \(escapeData($0))" }.joined(separator: "\n")
+        return """
+        # 个人词汇参考数据
+        以下标签内是用户配置的可能规范写法，只是参考数据，不是替换规则或必须出现的词。仅当本次口述、可靠的近音/上下文证据支持时，才可采用其中的完整写法。原文本身合理时必须保留；不得因为词表改写引号内容、代码、标识符、路径、数字、否定关系或其他事实。
+        <personal_vocabulary>
+        \(data)
+        </personal_vocabulary>
+        """
+    }
+
+    public static func selectPersonalVocabulary(_ vocabulary: [String]) -> PersonalVocabularySelection {
+        var terms: [String] = []
+        var includedIndices: [Int] = []
+        var excludedIndicesByReason: [String: [Int]] = [:]
+        var seen = Set<String>()
+        var characterCount = 0
+
+        func exclude(_ index: Int, for reason: String) {
+            excludedIndicesByReason[reason, default: []].append(index)
+        }
+
+        for (index, rawTerm) in vocabulary.enumerated() {
+            let term = rawTerm.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !term.isEmpty else {
+                exclude(index, for: "empty")
+                continue
+            }
+            guard !term.unicodeScalars.contains(where: { CharacterSet.newlines.contains($0) }) else {
+                exclude(index, for: "multiline")
+                continue
+            }
+            guard !IntelliSenseSensitiveTextScanner.containsSensitiveContent(term) else {
+                exclude(index, for: "sensitive")
+                continue
+            }
+            let key = term.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            guard seen.insert(key).inserted else {
+                exclude(index, for: "duplicate")
+                continue
+            }
+            guard terms.count < maximumPersonalVocabularyTerms else {
+                exclude(index, for: "termBudget")
+                continue
+            }
+            guard characterCount + term.count <= maximumPersonalVocabularyCharacters else {
+                exclude(index, for: "characterBudget")
+                continue
+            }
+            terms.append(term)
+            includedIndices.append(index)
+            characterCount += term.count
+        }
+        return PersonalVocabularySelection(
+            terms: terms,
+            includedIndices: includedIndices,
+            excludedIndicesByReason: excludedIndicesByReason
+        )
     }
 
     private static func structureInstructions(for intent: ListStructureIntent) -> String {

@@ -9,11 +9,13 @@ private final class CorrectionLearningPanelState: ObservableObject {
         case saveFailed
     }
 
+    @Published var alwaysReplace = false
+    @Published var alreadyKnown = false
     @Published var candidate: CorrectionCandidate?
     @Published var status: Status = .candidate
     @Published var remainingSeconds = 12
     @Published var isPresented = false
-    var onLearn: (() -> Void)?
+    var onLearn: ((CorrectionLearningScope) -> Void)?
     var onIgnore: (() -> Void)?
 }
 
@@ -70,7 +72,7 @@ final class CorrectionLearningPanelController {
     private var generation = 0
 
     init() {
-        let frame = NSRect(x: 0, y: 0, width: 500, height: 200)
+        let frame = NSRect(x: 0, y: 0, width: 500, height: 230)
         panel = CorrectionLearningPanel(contentRect: frame)
         let hosting = NSHostingView(rootView: CorrectionLearningCardView(state: state))
         hosting.frame = frame
@@ -81,12 +83,14 @@ final class CorrectionLearningPanelController {
 
     func show(
         candidate: CorrectionCandidate,
-        onLearn: @escaping () -> Void,
+        onLearn: @escaping (CorrectionLearningScope) -> Void,
         onIgnore: @escaping () -> Void
     ) {
         generation &+= 1
         lifecycleTask?.cancel()
         state.candidate = candidate
+        state.alwaysReplace = false
+        state.alreadyKnown = false
         state.status = .candidate
         state.remainingSeconds = 12
         state.isPresented = true
@@ -105,7 +109,8 @@ final class CorrectionLearningPanelController {
         scheduleAutoIgnore()
     }
 
-    func showLearned() {
+    func showLearned(alreadyKnown: Bool = false) {
+        state.alreadyKnown = alreadyKnown
         state.status = .learned
         state.onLearn = nil
         state.onIgnore = nil
@@ -166,11 +171,13 @@ final class CorrectionLearningPanelController {
 
 private struct CorrectionLearningCardView: View {
     @ObservedObject var state: CorrectionLearningPanelState
+    @AppStorage("tf_language") private var language = AppLanguage.systemDefault
     @AppStorage(RecordingTheme.storageKey) private var storedTheme = RecordingTheme.defaultValue
 
     private var theme: RecordingTheme { storedTheme }
 
     var body: some View {
+        let _ = language // Refresh every visible label when the language changes.
         ZStack {
             if let candidate = state.candidate, state.status != .learned {
                 HStack(spacing: 28) {
@@ -192,7 +199,7 @@ private struct CorrectionLearningCardView: View {
                 .font(.system(size: 20, weight: .semibold))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else if state.status == .learned {
-                Text(L("已加入个人词库", "Added to your vocabulary"))
+                Text(state.alreadyKnown ? L("此纠错参考已记录", "This reference is already recorded") : L("已保存", "Saved"))
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(primaryText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -210,8 +217,12 @@ private struct CorrectionLearningCardView: View {
                 Spacer()
 
                 if state.status != .learned {
+                    Toggle(L("始终全局替换（所有模式）", "Always replace globally (all modes)"), isOn: $state.alwaysReplace)
+                        .toggleStyle(.checkbox)
+                        .font(.system(size: 11))
+                        .padding(.bottom, 6)
                     HStack(spacing: 10) {
-                        Text(L("添加到热词和片段替换", "Add to hotwords and replacements"))
+                        Text(CorrectionLearningCardCopy.detail(scope: state.alwaysReplace ? .hotwordAndMapping : .softReference, language: language))
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(secondaryText)
                             .lineLimit(1)
@@ -225,7 +236,7 @@ private struct CorrectionLearningCardView: View {
                         )
 
                         Button(state.status == .saveFailed ? L("重试", "Retry") : L("添加", "Add")) {
-                            state.onLearn?()
+                            state.onLearn?(state.alwaysReplace ? .hotwordAndMapping : .softReference)
                         }
                         .buttonStyle(CorrectionCardButtonStyle(isPrimary: true, theme: theme))
                     }
@@ -291,7 +302,7 @@ private struct CorrectionLearningCardView: View {
     private var statusTitle: String {
         switch state.status {
         case .candidate: return L("Type4Me 发现了一次纠正", "Type4Me detected a correction")
-        case .learned: return L("已学习", "Learned")
+        case .learned: return state.alreadyKnown ? L("已记录，无新增", "Already recorded") : L("已保存", "Saved")
         case .saveFailed: return L("保存失败，请重试", "Couldn’t save. Try again")
         }
     }
@@ -345,6 +356,22 @@ private struct CorrectionCardButtonStyle: ButtonStyle {
         // capsule, so pressing has to deepen it instead of fading it out.
         case (.light, false):
             Color.black.opacity(isPressed ? 0.13 : 0.07)
+        }
+    }
+}
+
+
+/// The confirmation card describes what the existing Add action will persist.
+enum CorrectionLearningCardCopy {
+    static func detail(scope: CorrectionLearningScope, language: String) -> String {
+        let english = language == "en"
+        switch scope {
+        case .softReference:
+            return english ? "App-scoped spelling reference; not a forced rule" : "记住此应用中的纠错参考，不强制替换"
+        case .hotwordOnly:
+            return english ? "Remember the word; keep existing replacements" : "记住正确词，保留现有替换规则"
+        case .hotwordAndMapping:
+            return english ? "Add to hotwords and replacements" : "添加到热词和片段替换"
         }
     }
 }

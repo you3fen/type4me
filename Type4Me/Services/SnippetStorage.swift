@@ -20,7 +20,7 @@ enum SnippetStorage {
 
     private static var appSupportDir: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return dir.appendingPathComponent("Type4Me")
+        return dir.appendingPathComponent(AppDataNamespace.directoryName)
     }
 
     /// Built-in snippets file (seeded from defaults, user-editable for bulk ops)
@@ -407,9 +407,13 @@ enum SnippetStorage {
     // MARK: - Apply (merge both stores)
 
     /// Apply built-in + user snippets. User entries override built-in on trigger conflict.
-    static func applyEffective(to text: String) -> String {
+    static func applyEffective(to text: String, onMatch: ((String, Int, Int) -> Void)? = nil) -> String {
         var result = text
-        for rule in compiledRules() {
+        for (index, rule) in compiledRules().enumerated() {
+            if let onMatch {
+                let count = rule.regex.numberOfMatches(in: result, range: NSRange(result.startIndex..., in: result))
+                if count > 0 { onMatch("global", index, count) }
+            }
             result = rule.regex.stringByReplacingMatches(
                 in: result,
                 range: NSRange(result.startIndex..., in: result),
@@ -420,19 +424,23 @@ enum SnippetStorage {
     }
 
     /// Apply global + app-specific snippets. App rules win on trigger conflict.
-    static func applyEffective(to text: String, bundleId: String?) -> String {
-        guard let bundleId, !bundleId.isEmpty else { return applyEffective(to: text) }
+    static func applyEffective(to text: String, bundleId: String?, onMatch: ((String, Int, Int) -> Void)? = nil) -> String {
+        guard let bundleId, !bundleId.isEmpty else { return applyEffective(to: text, onMatch: onMatch) }
 
         let appRules = compiledAppRules(bundleId: bundleId)
-        guard !appRules.isEmpty else { return applyEffective(to: text) }
+        guard !appRules.isEmpty else { return applyEffective(to: text, onMatch: onMatch) }
 
         // Collect app rule patterns for conflict detection
         let appPatterns = Set(appRules.map(\.pattern))
 
         // Apply global rules first, skipping any that conflict with app rules
         var result = text
-        for rule in compiledRules() {
+        for (index, rule) in compiledRules().enumerated() {
             if appPatterns.contains(rule.pattern) { continue }
+            if let onMatch {
+                let count = rule.regex.numberOfMatches(in: result, range: NSRange(result.startIndex..., in: result))
+                if count > 0 { onMatch("global", index, count) }
+            }
             result = rule.regex.stringByReplacingMatches(
                 in: result,
                 range: NSRange(result.startIndex..., in: result),
@@ -441,7 +449,11 @@ enum SnippetStorage {
         }
 
         // Then apply app-specific rules (higher priority)
-        for rule in appRules {
+        for (index, rule) in appRules.enumerated() {
+            if let onMatch {
+                let count = rule.regex.numberOfMatches(in: result, range: NSRange(result.startIndex..., in: result))
+                if count > 0 { onMatch("app", index, count) }
+            }
             result = rule.regex.stringByReplacingMatches(
                 in: result,
                 range: NSRange(result.startIndex..., in: result),

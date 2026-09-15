@@ -176,7 +176,7 @@ actor BatchCorrectionSuggestionStore {
             let directory = FileManager.default.urls(
                 for: .applicationSupportDirectory,
                 in: .userDomainMask
-            ).first!.appendingPathComponent("Type4Me", isDirectory: true)
+            ).first!.appendingPathComponent(AppDataNamespace.directoryName, isDirectory: true)
             self.fileURL = directory.appendingPathComponent("batch-correction-suggestions-v1.json")
         }
     }

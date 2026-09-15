@@ -54,10 +54,12 @@ public enum IntelliSenseOutputValidator {
     public static func process(
         input: String,
         candidate: String,
-        context: IntelliSenseContextSnapshot? = nil
+        context: IntelliSenseContextSnapshot? = nil,
+        correctionReferences: [VocabularyCorrectionReference] = []
     ) -> IntelliSenseProcessingResult {
-        let analysis = CorrectionIntentAnalysis.analyze(input)
-        let decision = evaluate(input: input, output: candidate, context: context, analysis: analysis)
+        let validationInput = VocabularyCorrectionPolicy.validationInput(input, candidate: candidate, references: correctionReferences, context: context)
+        let analysis = CorrectionIntentAnalysis.analyze(validationInput)
+        let decision = evaluate(input: validationInput, output: candidate, context: context, analysis: analysis)
         let final: String
         if case .reject = decision { final = input } else { final = candidate }
         return IntelliSenseProcessingResult(
@@ -71,14 +73,10 @@ public enum IntelliSenseOutputValidator {
     public static func evaluate(
         input: String,
         output: String,
-        context: IntelliSenseContextSnapshot? = nil
+        context: IntelliSenseContextSnapshot? = nil,
+        correctionReferences: [VocabularyCorrectionReference] = []
     ) -> IntelliSenseGuardDecision {
-        evaluate(
-            input: input,
-            output: output,
-            context: context,
-            analysis: CorrectionIntentAnalysis.analyze(input)
-        )
+        process(input: input, candidate: output, context: context, correctionReferences: correctionReferences).decision
     }
 
     private static func evaluate(
@@ -295,10 +293,10 @@ public enum IntelliSenseOutputValidator {
         output: String,
         context: IntelliSenseContextSnapshot?
     ) -> Bool {
-        let inputTokens = ProtectedFactExtractor.tokens(in: input)
-        let outputTokens = ProtectedFactExtractor.tokens(in: output)
+        let inputTokens = ProtectedFactExtractor.tokens(in: input) + mixedDigitTerms(in: input)
+        let outputTokens = ProtectedFactExtractor.tokens(in: output) + mixedDigitTerms(in: output)
         let contextText = (context?.contextBeforeCursor ?? "") + "\n" + (context?.contextAfterCursor ?? "")
-        let contextTokens = ProtectedFactExtractor.tokens(in: contextText)
+        let contextTokens = ProtectedFactExtractor.tokens(in: contextText) + mixedDigitTerms(in: contextText)
         let additions = outputTokens.filter { token in
             !inputTokens.contains(where: { $0.caseInsensitiveCompare(token) == .orderedSame })
                 && !contextTokens.contains(where: { $0.caseInsensitiveCompare(token) == .orderedSame })
@@ -310,6 +308,15 @@ public enum IntelliSenseOutputValidator {
         return !inputTokens.isEmpty && additions.contains { token in
             token.rangeOfCharacter(from: .decimalDigits) != nil
                 && !appearsOnlyAsListMarker(token, in: output)
+        }
+    }
+
+    /// Capitalization must not let a new brand/version bypass numeric-fact checks.
+    /// References normalize only a verified local substitution before this check.
+    private static func mixedDigitTerms(in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9_-]*[0-9][A-Za-z0-9_-]*(?![A-Za-z0-9_])"#) else { return [] }
+        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap {
+            Range($0.range, in: text).map { String(text[$0]) }
         }
     }
 

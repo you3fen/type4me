@@ -40,7 +40,7 @@ final class AppUpdater {
 
     private var stagingDir: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupport.appendingPathComponent("Type4Me/Updates")
+        return appSupport.appendingPathComponent(AppDataNamespace.directoryName).appendingPathComponent("Updates")
     }
 
     private var updateLogURL: URL { stagingDir.appendingPathComponent("update.log") }
@@ -57,6 +57,10 @@ final class AppUpdater {
     // MARK: - Public API
 
     func downloadUpdate(release: UpdateInfo) {
+        guard !AppDataNamespace.isPersonal else {
+            state = .failed(L("个人版请从复刻仓库更新", "Update the personal build from your fork"))
+            return
+        }
         switch state {
         case .idle, .failed: break
         default: return
@@ -115,6 +119,10 @@ final class AppUpdater {
     }
 
     func installAndRestart() {
+        guard !AppDataNamespace.isPersonal else {
+            state = .failed(L("个人版请从复刻仓库更新", "Update the personal build from your fork"))
+            return
+        }
         guard case .readyToInstall = state else { return }
         guard let version = downloadedVersion else { return }
 

@@ -102,6 +102,7 @@ final class UpdateChecker {
 
     /// Start periodic checking: immediate check + 24h timer.
     func startPeriodicChecking(appState: AppState) {
+        guard !AppDataNamespace.isPersonal else { return }
         Task {
             await check(appState: appState)
         }
@@ -147,6 +148,7 @@ final class UpdateChecker {
     }
 
     private func fetch(appState: AppState) async {
+        guard !AppDataNamespace.isPersonal else { return }
         appState.isCheckingUpdate = true
         defer { appState.isCheckingUpdate = false }
 

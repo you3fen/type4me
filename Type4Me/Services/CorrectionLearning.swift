@@ -73,6 +73,32 @@ struct CorrectionCandidate: Equatable, Sendable {
     let correctedText: String
     let sourceRecordID: String
     let bundleIdentifier: String
+    let learningScope: CorrectionLearningScope
+
+    init(
+        wrongText: String,
+        correctedText: String,
+        sourceRecordID: String,
+        bundleIdentifier: String,
+        learningScope: CorrectionLearningScope = .softReference
+    ) {
+        self.wrongText = wrongText
+        self.correctedText = correctedText
+        self.sourceRecordID = sourceRecordID
+        self.bundleIdentifier = bundleIdentifier
+        self.learningScope = learningScope
+    }
+}
+
+enum CorrectionLearningScope: String, Equatable, Sendable {
+    /// Default: explicitly confirmed app-scoped evidence, not a forced rule.
+    case softReference
+    /// Explicit opt-in only: the user requests an unconditional global rule.
+    case hotwordAndMapping
+
+    /// A user may confirm the preferred word without promoting an uncertain
+    /// observed phrase into a global replacement rule.
+    case hotwordOnly
 }
 
 enum CorrectionDiffRejection: String, Equatable, Sendable {
@@ -152,8 +178,14 @@ enum CorrectionDiffAnalyzer {
             inserted: rawInserted
         )
         if isMixedScriptReplacement {
-            let cjkLength = rawRemoved.allSatisfy(isCJK) ? rawRemoved.count : rawInserted.count
-            let latinLength = rawRemoved.allSatisfy(isCJK) ? rawInserted.count : rawRemoved.count
+            let trimmedRemoved = trimmingBoundaryWhitespace(rawRemoved)
+            let trimmedInserted = trimmingBoundaryWhitespace(rawInserted)
+            let cjkLength = trimmedRemoved.allSatisfy(isCJK)
+                ? trimmedRemoved.count
+                : trimmedInserted.count
+            let latinLength = trimmedRemoved.allSatisfy(isCJK)
+                ? trimmedInserted.count
+                : trimmedRemoved.count
             guard cjkLength >= 2, latinLength >= 2 else {
                 return .rejected(.ambiguousCJKReplacement)
             }
@@ -237,7 +269,12 @@ enum CorrectionDiffAnalyzer {
         guard !isSensitive(wrong), !isSensitive(corrected) else {
             return .rejected(.sensitiveContent)
         }
-        if wrong.contains(where: isLatinTokenCharacter)
+        if isMixedScriptReplacement {
+            let latinToken = wrong.contains(where: isLatinTokenCharacter) ? wrong : corrected
+            guard TechnicalTokenBoundaryResolver.isSingleStableToken(latinToken) else {
+                return .rejected(.invalidCandidate)
+            }
+        } else if wrong.contains(where: isLatinTokenCharacter)
             || corrected.contains(where: isLatinTokenCharacter) {
             guard TechnicalTokenBoundaryResolver.isSingleStableToken(wrong),
                   TechnicalTokenBoundaryResolver.isSingleStableToken(corrected)
@@ -353,7 +390,7 @@ enum CorrectionDiffAnalyzer {
 
     private static func shouldExpand(over character: Character, cjkMode: Bool) -> Bool {
         if cjkMode { return isCJK(character) }
-        return character.isLetter || character.isNumber || character == "_"
+        return isLatinTokenCharacter(character) || character == "_"
     }
 
     private static func isLearnableCharacter(_ character: Character) -> Bool {
@@ -374,15 +411,31 @@ enum CorrectionDiffAnalyzer {
         removed: [Character],
         inserted: [Character]
     ) -> Bool {
+        let removed = trimmingBoundaryWhitespace(removed)
+        let inserted = trimmingBoundaryWhitespace(inserted)
         guard !removed.isEmpty, !inserted.isEmpty else { return false }
         let removedIsCJK = removed.allSatisfy(isCJK)
         let insertedIsCJK = inserted.allSatisfy(isCJK)
-        let removedIsLatin = removed.allSatisfy(isTechnicalTokenCharacter)
-            && removed.contains(where: isLatinTokenCharacter)
-        let insertedIsLatin = inserted.allSatisfy(isTechnicalTokenCharacter)
-            && inserted.contains(where: isLatinTokenCharacter)
+        let removedIsLatin = isStableLatinTechnicalToken(removed)
+        let insertedIsLatin = isStableLatinTechnicalToken(inserted)
         return (removedIsCJK && insertedIsLatin)
             || (removedIsLatin && insertedIsCJK)
+    }
+
+    private static func isStableLatinTechnicalToken(_ characters: [Character]) -> Bool {
+        let text = String(characters)
+        return TechnicalTokenBoundaryResolver.isSingleStableToken(text)
+            && characters.contains(where: isLatinTokenCharacter)
+    }
+
+    /// Diff hunks include a separator typed immediately beside a replacement.
+    /// It establishes neither side's word identity, so inspect it only for
+    /// classification and keep the original hunk indices for all extraction.
+    private static func trimmingBoundaryWhitespace(_ characters: [Character]) -> [Character] {
+        guard let first = characters.firstIndex(where: { !$0.isWhitespace }),
+              let last = characters.lastIndex(where: { !$0.isWhitespace })
+        else { return [] }
+        return Array(characters[first...last])
     }
 
     private static func isCJK(_ character: Character) -> Bool {
@@ -483,9 +536,18 @@ protocol CorrectionVocabularyPersisting {
     func loadMappings() -> [CorrectionMapping]
     func saveHotwords(_ words: [String]) throws
     func saveMappings(_ mappings: [CorrectionMapping]) throws
+    func loadReferences() throws -> [VocabularyCorrectionReference]
+    func saveReferences(_ references: [VocabularyCorrectionReference]) throws
+}
+
+extension CorrectionVocabularyPersisting {
+    func loadReferences() throws -> [VocabularyCorrectionReference] { throw CorrectionReferenceError.unsupportedPersistence }
+    func saveReferences(_ references: [VocabularyCorrectionReference]) throws { throw CorrectionReferenceError.unsupportedPersistence }
 }
 
 struct Type4MeCorrectionVocabularyPersistence: CorrectionVocabularyPersisting {
+    func loadReferences() throws -> [VocabularyCorrectionReference] { try CorrectionReferenceStorage.load() }
+    func saveReferences(_ references: [VocabularyCorrectionReference]) throws { try CorrectionReferenceStorage.save(references) }
     func loadHotwords() -> [String] { HotwordStorage.load() }
     func loadMappings() -> [CorrectionMapping] {
         SnippetStorage.load().map { CorrectionMapping(trigger: $0.trigger, replacement: $0.value) }
@@ -496,6 +558,8 @@ struct Type4MeCorrectionVocabularyPersistence: CorrectionVocabularyPersisting {
     }
 }
 
+enum CorrectionLearningOutcome: Equatable { case saved, alreadyKnown }
+
 struct CorrectionLearningStore {
     let persistence: any CorrectionVocabularyPersisting
 
@@ -503,14 +567,40 @@ struct CorrectionLearningStore {
         self.persistence = persistence
     }
 
-    func learn(_ candidate: CorrectionCandidate) throws {
+    @discardableResult
+    func learn(_ candidate: CorrectionCandidate) throws -> CorrectionLearningOutcome {
         let oldHotwords = persistence.loadHotwords()
-        let oldMappings = persistence.loadMappings()
 
         var newHotwords = oldHotwords
         if !newHotwords.contains(where: { $0.caseInsensitiveCompare(candidate.correctedText) == .orderedSame }) {
             newHotwords.append(candidate.correctedText)
         }
+
+        let hotwordsChanged = newHotwords != oldHotwords
+        if candidate.learningScope == .softReference {
+            let reference = VocabularyCorrectionReference(
+                wrongText: candidate.wrongText, correctedText: candidate.correctedText,
+                bundleIdentifier: candidate.bundleIdentifier, sourceRecordID: candidate.sourceRecordID
+            )
+            guard reference.isValid else { throw CorrectionReferenceError.invalidReference }
+            let oldReferences = try persistence.loadReferences()
+            let alreadyKnown = oldReferences.contains { $0.comparisonKey == reference.comparisonKey }
+            guard hotwordsChanged || !alreadyKnown else { return .alreadyKnown }
+            if hotwordsChanged { try persistence.saveHotwords(newHotwords) }
+            do {
+                if !alreadyKnown { try persistence.saveReferences(oldReferences + [reference]) }
+            } catch {
+                if hotwordsChanged { try? persistence.saveHotwords(oldHotwords) }
+                throw error
+            }
+            return .saved
+        }
+        if candidate.learningScope == .hotwordOnly {
+            if hotwordsChanged { try persistence.saveHotwords(newHotwords) }
+            return hotwordsChanged ? .saved : .alreadyKnown
+        }
+
+        let oldMappings = persistence.loadMappings()
 
         var newMappings = oldMappings
         if let index = newMappings.firstIndex(where: {
@@ -527,9 +617,8 @@ struct CorrectionLearningStore {
             ))
         }
 
-        let hotwordsChanged = newHotwords != oldHotwords
         let mappingsChanged = newMappings != oldMappings
-        guard hotwordsChanged || mappingsChanged else { return }
+        guard hotwordsChanged || mappingsChanged else { return .alreadyKnown }
 
         do {
             if hotwordsChanged { try persistence.saveHotwords(newHotwords) }
@@ -542,6 +631,7 @@ struct CorrectionLearningStore {
         } catch {
             throw error
         }
+        return .saved
     }
 }
 
@@ -1044,9 +1134,10 @@ final class PostInjectionLearningCoordinator: NSObject {
         let original = observation.visibleInjectedText
         let edited = observation.lastReliableVisibleInjectedText
         Task { [weak self] in
-            let result = await ImmediateCorrectionAnalyzer.analyze(
+            let result = await ImmediateCorrectionAnalyzer.analyzeForImmediateCandidate(
                 original: original,
-                edited: edited
+                edited: edited,
+                diagnosticRecordID: observation.context.sourceRecordID
             )
             guard let self,
                   self.active?.context.sourceRecordID == sourceRecordID,
@@ -1061,25 +1152,34 @@ final class PostInjectionLearningCoordinator: NSObject {
     }
 
     private func stageCandidateResult(
-        _ result: CorrectionDiffResult,
+        _ result: ImmediateCorrectionCandidateResult,
         observation: ActiveObservation,
         observedText: String
     ) {
         guard handledCorrectionCandidate == nil else { return }
         switch result {
-        case .candidate(let wrongText, let correctedText):
+        case .candidate(let wrongText, let correctedText, let learningScope):
             let candidate = CorrectionCandidate(
                 wrongText: wrongText,
                 correctedText: correctedText,
                 sourceRecordID: observation.context.sourceRecordID,
-                bundleIdentifier: observation.context.bundleIdentifier
+                bundleIdentifier: observation.context.bundleIdentifier,
+                learningScope: learningScope
             )
             pendingCorrectionCandidate = PendingCorrectionCandidate(
                 candidate: candidate,
                 observedText: observedText
             )
+            DebugFileLogger.log(
+                "correction candidate staged: record=\(candidate.sourceRecordID) "
+                    + "scope=\(candidate.learningScope.rawValue) "
+                    + "bundle=\(candidate.bundleIdentifier)"
+            )
         case .rejected(let reason):
-            DebugFileLogger.log("correction candidate rejected: reason=\(reason.rawValue) bundle=\(observation.context.bundleIdentifier)")
+            DebugFileLogger.log(
+                "correction candidate rejected: record=\(observation.context.sourceRecordID) "
+                    + "reason=\(reason.rawValue) bundle=\(observation.context.bundleIdentifier)"
+            )
             Task {
                 await UserEditObservationMetrics.shared.record(
                     .candidateRejected,
@@ -1106,9 +1206,20 @@ final class PostInjectionLearningCoordinator: NSObject {
         self.panelController = panelController
         panelController.show(
             candidate: candidate,
-            onLearn: { [weak self] in self?.learn(candidate) },
+            onLearn: { [weak self] scope in
+                let confirmed = CorrectionCandidate(
+                    wrongText: candidate.wrongText, correctedText: candidate.correctedText,
+                    sourceRecordID: candidate.sourceRecordID, bundleIdentifier: candidate.bundleIdentifier,
+                    learningScope: scope
+                )
+                self?.learn(confirmed)
+            },
             onIgnore: { [weak self] in
                 Task { await UserEditObservationMetrics.shared.record(.candidateIgnored) }
+                DebugFileLogger.log(
+                    "correction candidate ignored: record=\(candidate.sourceRecordID) "
+                        + "scope=\(candidate.learningScope.rawValue)"
+                )
                 self?.panelController?.hide()
             }
         )
@@ -1161,16 +1272,24 @@ final class PostInjectionLearningCoordinator: NSObject {
 
     private func learn(_ candidate: CorrectionCandidate) {
         do {
-            try learningStore.learn(candidate)
+            let outcome = try learningStore.learn(candidate)
+            DebugFileLogger.log(
+                "correction learning outcome=\(outcome): record=\(candidate.sourceRecordID) "
+                    + "scope=\(candidate.learningScope.rawValue)"
+            )
             Task { await UserEditObservationMetrics.shared.record(.candidateAccepted) }
             Task {
                 await HybridChineseWordSegmenter.shared.insertConfirmedUserWord(
                     candidate.correctedText
                 )
             }
-            panelController?.showLearned()
+            panelController?.showLearned(alreadyKnown: outcome == .alreadyKnown)
         } catch {
-            DebugFileLogger.log("correction learning save failed: bundle=\(candidate.bundleIdentifier) error=\(error.localizedDescription)")
+            DebugFileLogger.log(
+                "correction learning save failed: record=\(candidate.sourceRecordID) "
+                    + "scope=\(candidate.learningScope.rawValue) "
+                    + "bundle=\(candidate.bundleIdentifier) error=\(error.localizedDescription)"
+            )
             panelController?.showSaveFailure()
         }
     }

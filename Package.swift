@@ -12,12 +12,14 @@ let hasCloudSubscription = FileManager.default.fileExists(
 let hasCppJiebaBridge = FileManager.default.fileExists(
     atPath: packageDir + "/CppJiebaBridge/marker"
 )
+let isPersonalBuild = ProcessInfo.processInfo.environment["TYPE4ME_PERSONAL_BUILD"] == "1"
 let isDevBuild = ProcessInfo.processInfo.environment["TYPE4ME_DEV_BUILD"] == "1"
 
 var swiftDefines: [SwiftSetting] = [.swiftLanguageMode(.v5)]
 if hasSherpaFramework { swiftDefines.append(.define("HAS_SHERPA_ONNX")) }
 if hasCloudSubscription { swiftDefines.append(.define("HAS_CLOUD_SUBSCRIPTION")) }
 if hasCppJiebaBridge { swiftDefines.append(.define("HAS_CPPJIEBA")) }
+if isPersonalBuild { swiftDefines.append(.define("TYPE4ME_PERSONAL_BUILD")) }
 if isDevBuild { swiftDefines.append(.define("TYPE4ME_DEV_BUILD")) }
 
 var excludes = ["Resources", "UI/FloatingBar/LiquidGlass/LiquidGlassShaders.metal"]

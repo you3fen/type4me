@@ -403,7 +403,8 @@ final class CorrectionLearningStoreTests: XCTestCase {
             wrongText: wrong,
             correctedText: corrected,
             sourceRecordID: "record",
-            bundleIdentifier: "com.example.editor"
+            bundleIdentifier: "com.example.editor",
+            learningScope: .hotwordAndMapping
         )
     }
 }

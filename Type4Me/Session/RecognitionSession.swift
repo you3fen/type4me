@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import os
 import Type4MeIntelliSenseCore
 import Type4MeReviseCore
@@ -369,6 +370,47 @@ actor RecognitionSession {
     #if DEBUG
     /// Test seam: test-injected LLM client override to precisely verify invocation count and input text.
     private var injectedLLMClient: (any LLMClient)?
+    private var targetForTesting: (@Sendable () -> TargetApplicationContext)?
+    private var captureContextForTesting: (@Sendable (TargetApplicationContext, IntelliSenseSettings) async -> IntelliSenseContextSnapshot)?
+    private var capturesTextOutputForTesting = false
+    private var capturedTextOutputForTesting: (text: String, trace: String?)?
+
+    func processIntelliSenseForTesting(
+        text: String,
+        startingSnapshot: IntelliSenseContextSnapshot,
+        settings: IntelliSenseSettings,
+        isAutomation: Bool = false,
+        manualInput: Bool = false,
+        cancelled: Bool = false,
+        shortTextExemption: Int = 0,
+        personalVocabulary: [String] = [],
+        correctionReferences: [VocabularyCorrectionReference] = [],
+        currentTarget: @escaping @Sendable () -> TargetApplicationContext,
+        capture: @escaping @Sendable (TargetApplicationContext, IntelliSenseSettings) async -> IntelliSenseContextSnapshot
+    ) async -> (text: String, trace: String?)? {
+        freezeIntelliSenseForTesting(snapshot: startingSnapshot, settings: settings)
+        intelliSenseSettings = settings
+        personalVocabularySnapshot = personalVocabulary
+        correctionReferenceSnapshot = correctionReferences
+        currentMode.shortTextExemption = shortTextExemption
+        recordingPurpose = .input(currentMode)
+        completionIntent = cancelled ? .cancelled : .normal
+        clipboardOutputPolicy = .cancelRawTranscript
+        isAutomationTarget = isAutomation
+        isManualInput = manualInput
+        targetForTesting = currentTarget
+        captureContextForTesting = capture
+        capturesTextOutputForTesting = true
+        capturedTextOutputForTesting = nil
+        defer {
+            targetForTesting = nil
+            captureContextForTesting = nil
+            capturesTextOutputForTesting = false
+        }
+        await finishTextOutput(text, generation: sessionGeneration, stopStartedAt: .now, needsLLM: true)
+        return capturedTextOutputForTesting
+    }
+
 
     func setInjectedLLMClientForTesting(_ client: (any LLMClient)?) {
         injectedLLMClient = client
@@ -386,6 +428,59 @@ actor RecognitionSession {
     // MARK: - Session generation (prevents zombie tasks after forceReset)
 
     private var sessionGeneration: Int = 0
+    private let diagnosticInstanceID = UUID().uuidString
+    private var diagnosticSessionID: String { "\(diagnosticInstanceID)-\(sessionGeneration)" }
+    private var personalVocabularySnapshot: [String]?
+    private var correctionReferenceSnapshot: [VocabularyCorrectionReference]?
+    private var requestCorrectionReferences: [VocabularyCorrectionReference] = []
+
+    private func correctionReferences(for snapshot: IntelliSenseContextSnapshot, text: String) -> [VocabularyCorrectionReference] {
+        if snapshot.availability == .blacklisted || snapshot.availability == .sensitive {
+            requestCorrectionReferences = []
+            return []
+        }
+        if correctionReferenceSnapshot == nil {
+            do { correctionReferenceSnapshot = try CorrectionReferenceStorage.load() }
+            catch {
+                DebugFileLogger.log("correction reference load failed session=\(diagnosticSessionID)")
+                correctionReferenceSnapshot = []
+            }
+        }
+        requestCorrectionReferences = VocabularyCorrectionPolicy.select(correctionReferenceSnapshot ?? [], input: text, context: snapshot)
+        DebugFileLogger.log("correction references session=\(diagnosticSessionID) selected=\(requestCorrectionReferences.count)")
+        return requestCorrectionReferences
+    }
+
+    private static func vocabularyFingerprint(_ words: [String]) -> String {
+        let data = (try? JSONEncoder().encode(words)) ?? Data()
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func personalVocabulary(for snapshot: IntelliSenseContextSnapshot) -> [String] {
+        guard snapshot.availability != .blacklisted, snapshot.availability != .sensitive else {
+            DebugFileLogger.log("vocabulary prompt session=\(diagnosticSessionID) excluded=contextPrivacy")
+            return []
+        }
+        if personalVocabularySnapshot == nil {
+            personalVocabularySnapshot = HotwordStorage.loadEffective()
+        }
+        let words = personalVocabularySnapshot ?? []
+        let selection = IntelliSensePromptBuilder.selectPersonalVocabulary(words)
+        let reasons = selection.excludedIndicesByReason.keys.sorted().map {
+            "\($0):\(selection.excludedIndicesByReason[$0] ?? [])"
+        }.joined(separator: ",")
+        DebugFileLogger.log("vocabulary prompt session=\(diagnosticSessionID) version=\(Self.vocabularyFingerprint(words)) included=\(selection.includedIndices) excluded=\(reasons)")
+        return words
+    }
+
+    private func applySnippets(_ text: String, bundleId: String?) -> String {
+        let global = SnippetStorage.load()
+        let app = bundleId.map { SnippetStorage.loadAppSnippets(bundleId: $0) } ?? []
+        let fingerprint = Self.vocabularyFingerprint((global + app).flatMap { [$0.trigger, $0.value] })
+        return SnippetStorage.applyEffective(to: text, bundleId: bundleId) { scope, index, count in
+            DebugFileLogger.log("vocabulary snippet session=\(self.diagnosticSessionID) version=\(fingerprint) scope=\(scope) index=\(index) matches=\(count)")
+        }
+    }
 
     // MARK: - Accumulated text
 
@@ -950,8 +1045,12 @@ actor RecognitionSession {
                 intelliSenseSettings = settings
                 intelliSenseTarget = target
                 intelliSenseStartedModeID = effectiveMode.id
-                intelliSenseContextTask = Task {
-                    await IntelliSenseContextCapturer.capture(target: target, settings: settings)
+                // Interactive speech chooses its environment after ASR finishes.
+                // Automation retains the context of its pinned destination.
+                if isAutomation {
+                    intelliSenseContextTask = Task {
+                        await IntelliSenseContextCapturer.capture(target: target, settings: settings)
+                    }
                 }
             }
 
@@ -1052,6 +1151,7 @@ actor RecognitionSession {
         // Load hotwords
         let hotwords = HotwordStorage.loadEffective()
         let biasSettings = ASRBiasSettingsStorage.load()
+        DebugFileLogger.log("vocabulary ASR session=\(diagnosticSessionID) provider=\(provider.rawValue) version=\(Self.vocabularyFingerprint(hotwords)) count=\(hotwords.count) configuredCloudTable=\(!biasSettings.boostingTableID.isEmpty)")
         let requestOptions = ASRRequestOptions(
             enablePunc: true,
             hotwords: hotwords,
@@ -1830,12 +1930,12 @@ actor RecognitionSession {
         currentConfig = nil
 
         // The final transcript is available after teardown and any batch fallback.
-        let canFireLLMAtStop = providerIsStreaming
+        let canFireLLMAtStop = providerIsStreaming && !refreshesIntelliSenseAtProcessing
         var finalLLMTask: Task<TimedLLMResult, Never>?
         if needsLLM && canFireLLMAtStop {
             var finalASRText = effectiveText
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            finalASRText = SnippetStorage.applyEffective(to: finalASRText, bundleId: targetBundleId)
+            finalASRText = applySnippets(finalASRText, bundleId: targetBundleId)
 
             // Short text exemption: skip LLM for short texts (per-mode threshold)
             let exemptionThreshold = currentMode.shortTextExemption
@@ -1928,11 +2028,19 @@ actor RecognitionSession {
                 return
             }
 
+            if refreshesIntelliSenseAtProcessing, !cancellationSkipsLLM {
+                intelliSenseTarget = currentIntelliSenseTarget()
+            }
+
             // Apply snippet replacements before LLM (e.g. "我的邮箱" → actual email)
             if !isManualInput {
-                finalText = SnippetStorage.applyEffective(to: finalText, bundleId: targetBundleId)
+                finalText = applySnippets(
+                    finalText,
+                    bundleId: refreshesIntelliSenseAtProcessing
+                        ? intelliSenseTarget?.bundleIdentifier : targetBundleId
+                )
             }
-            let intelliSenseGuardInput = finalText
+            var intelliSenseGuardInput = finalText
 
             if cancellationSkipsLLM {
                 // A cancellation may arrive while ASR teardown is awaiting.
@@ -2052,18 +2160,29 @@ actor RecognitionSession {
             } else if needsLLM {
                 state = .postProcessing
                 if let runtime = await resolveLLMRuntime() {
+                    if refreshesIntelliSenseAtProcessing, !cancellationSkipsLLM {
+                        await refreshIntelliSenseProcessingContext(generation: myGeneration)
+                        guard sessionGeneration == myGeneration else { return }
+                        finalText = applySnippets(
+                            effectiveText, bundleId: intelliSenseTarget?.bundleIdentifier
+                        )
+                        intelliSenseGuardInput = finalText
+                    }
                     rememberHistoryLLM(runtime)
                     let llmConfig = runtime.config
                     DebugFileLogger.log("stop: sync LLM firing mode=\(currentMode.name) model=\(llmConfig.model) with \(finalText.count) chars")
                     let client = runtime.client
                     let prompt = await promptForCurrentMode(text: finalText)
                     let inputBoundary = llmInputBoundaryForCurrentMode()
+                    guard sessionGeneration == myGeneration else { return }
                     let textForLLM = finalText
+                    let skipsCancelledRequest = cancellationSkipsLLM
 
                     let requestStartedAt = Date()
                     let llmOutcome: TimedLLMResult = await withCheckedContinuation { continuation in
                         let finished = OSAllocatedUnfairLock(initialState: false)
                         let llmTask = Task {
+                            if skipsCancelledRequest { return TimedLLMResult(text: nil, durationSeconds: 0) }
                             do {
                                 let result = try await client.process(
                                     text: textForLLM,
@@ -2194,7 +2313,18 @@ actor RecognitionSession {
                 clearHistoryLLMMetadata()
             }
 
+            guard sessionGeneration == myGeneration else { return }
             finalText = formattedOutputText(finalText)
+
+            #if DEBUG
+            if capturesTextOutputForTesting {
+                capturedTextOutputForTesting = (
+                    finalText,
+                    await makeIntelliSenseHistoryTraceJSON(input: rawText, finalText: finalText, processingFailed: llmFailed)
+                )
+                return
+            }
+            #endif
 
             state = .injecting
             let wasCancelled = completionIntent == .cancelled
@@ -2212,6 +2342,7 @@ actor RecognitionSession {
             let onEvent = self.onASREvent
             let failedLLM = llmFailed
             let recordId = UUID().uuidString
+            DebugFileLogger.log("vocabulary history session=\(diagnosticSessionID) record_id=\(recordId)")
             let modeID = currentMode.id
             let sessionSettings = intelliSenseRequestContext?.settings ?? intelliSenseSettings
             let contextAvailability = intelliSenseRequestContext?.snapshot.availability
@@ -2361,7 +2492,7 @@ actor RecognitionSession {
                     if intelliSenseSettings?.isBlacklisted(bundleIdentifier: actualBundleID) == true {
                         return .blacklisted
                     }
-                    if actualBundleID == targetBundleId {
+                    if actualBundleID == intelliSenseTarget?.bundleIdentifier {
                         return contextAvailability
                     }
                     return nil
@@ -2377,7 +2508,7 @@ actor RecognitionSession {
                     targetBundleIdentifier: actualBundleID
                 )
                 let actualCategory = {
-                    if actualBundleID == targetBundleId,
+                    if actualBundleID == intelliSenseTarget?.bundleIdentifier,
                        let startCategory = intelliSenseRequestContext?.snapshot.appCategory {
                         return startCategory
                     }
@@ -2935,23 +3066,25 @@ actor RecognitionSession {
         let result = IntelliSenseOutputValidator.process(
             input: input,
             candidate: output,
-            context: intelliSenseRequestContext?.snapshot
+            context: intelliSenseRequestContext?.snapshot,
+            correctionReferences: requestCorrectionReferences
         )
         intelliSenseLastProcessingResult = result
         DebugFileLogger.log(
-            "intelli sense validation candidateLength=\(output.count) finalLength=\(result.finalText.count) correction=\(result.correctionAnalysis.containsExplicitCorrection)"
+            "intelli sense validation session=\(diagnosticSessionID) candidateLength=\(output.count) finalLength=\(result.finalText.count) correction=\(result.correctionAnalysis.containsExplicitCorrection)"
         )
         switch result.decision {
         case .accept:
+            DebugFileLogger.log("intelli sense guard session=\(diagnosticSessionID) accepted")
             return (result.finalText, false)
         case .acceptWithWarnings(let warnings):
             DebugFileLogger.log(
-                "intelli sense guard warnings=\(warnings.map(\.rawValue).joined(separator: ","))"
+                "intelli sense guard session=\(diagnosticSessionID) warnings=\(warnings.map(\.rawValue).joined(separator: ","))"
             )
             return (result.finalText, false)
         case .reject(let reason):
             intelliSenseGuardRejected = true
-            DebugFileLogger.log("intelli sense guard rejected reason=\(reason.rawValue)")
+            DebugFileLogger.log("intelli sense guard session=\(diagnosticSessionID) rejected reason=\(reason.rawValue)")
             return (result.finalText, true)
         }
     }
@@ -2990,7 +3123,9 @@ actor RecognitionSession {
                 text: text ?? "",
                 context: context.snapshot,
                 settings: context.settings,
-                expressionProfile: context.expressionProfile
+                expressionProfile: context.expressionProfile,
+                personalVocabulary: personalVocabulary(for: context.snapshot),
+                correctionReferences: correctionReferences(for: context.snapshot, text: text ?? "")
             ))
         }
 
@@ -3040,13 +3175,70 @@ actor RecognitionSession {
             text: text ?? "",
             context: snapshot,
             settings: settings,
-            expressionProfile: expressionProfile
+            expressionProfile: expressionProfile,
+            personalVocabulary: personalVocabulary(for: snapshot),
+            correctionReferences: correctionReferences(for: snapshot, text: text ?? "")
         ))
+    }
+
+    private var refreshesIntelliSenseAtProcessing: Bool {
+        currentMode.id == ProcessingMode.intelliSenseId
+            && intelliSenseStartedModeID == ProcessingMode.intelliSenseId
+            && !intelliSenseCrossModeFallback && !isAutomationTarget && !isManualInput
+    }
+
+    private func currentIntelliSenseTarget() -> TargetApplicationContext {
+        #if DEBUG
+        if let targetForTesting { return targetForTesting() }
+        #endif
+        let app = NSWorkspace.shared.frontmostApplication
+        return TargetApplicationContext(
+            processIdentifier: app?.processIdentifier,
+            bundleIdentifier: app?.bundleIdentifier,
+            displayName: app?.localizedName
+        )
+    }
+
+    private func refreshIntelliSenseProcessingContext(generation: Int) async {
+        guard let settings = intelliSenseSettings else { return }
+        var target = currentIntelliSenseTarget()
+        var snapshot: IntelliSenseContextSnapshot
+        #if DEBUG
+        if let captureContextForTesting {
+            snapshot = await captureContextForTesting(target, settings)
+        } else {
+            snapshot = await IntelliSenseContextCapturer.capture(target: target, settings: settings)
+        }
+        #else
+        snapshot = await IntelliSenseContextCapturer.capture(target: target, settings: settings)
+        #endif
+        guard sessionGeneration == generation else { return }
+        // AX capture can take up to 300 ms. If the app changed meanwhile, discard
+        // its text and use the new app's scene rather than chase focus or delay LLM.
+        let currentTarget = currentIntelliSenseTarget()
+        if currentTarget.processIdentifier != target.processIdentifier
+            || currentTarget.bundleIdentifier != target.bundleIdentifier {
+            target = currentTarget
+            snapshot = .appOnly(target)
+            if settings.isBlacklisted(bundleIdentifier: target.bundleIdentifier) {
+                snapshot.availability = .blacklisted
+            }
+        }
+        intelliSenseContextTask?.cancel()
+        intelliSenseTarget = target
+        intelliSenseContextTask = Task { snapshot }
+        intelliSenseRequestContext = nil
+        intelliSenseLastProcessingResult = nil
+        intelliSenseGuardRejected = false
+        DebugFileLogger.log("intelli sense processing context refreshed bundle=\(target.bundleIdentifier ?? "none")")
     }
 
     private func clearIntelliSenseSessionContext() {
         intelliSenseContextTask?.cancel()
         intelliSenseContextTask = nil
+        personalVocabularySnapshot = nil
+        correctionReferenceSnapshot = nil
+        requestCorrectionReferences = []
         intelliSenseRequestContext = nil
         intelliSenseSettings = nil
         intelliSenseTarget = nil

@@ -99,7 +99,7 @@ final class ReviseSettingsStore: @unchecked Sendable {
             let directory = FileManager.default.urls(
                 for: .applicationSupportDirectory,
                 in: .userDomainMask
-            ).first!.appendingPathComponent("Type4Me", isDirectory: true)
+            ).first!.appendingPathComponent(AppDataNamespace.directoryName, isDirectory: true)
             self.fileURL = directory.appendingPathComponent("revise-settings.json")
         }
         if let userDefaultsSuiteName {

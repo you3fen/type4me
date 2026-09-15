@@ -148,6 +148,7 @@ struct VocabularyTab: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selectedSection: VocabularySection = .hotwords
     @State private var isSearchExpanded = false
+    @State private var showsCorrectionReferences = false
     @State private var searchQuery = ""
     @FocusState private var isSearchFocused: Bool
     @FocusState private var focusedVocabularyInput: VocabularyInputFocus?
@@ -210,6 +211,8 @@ struct VocabularyTab: View {
                     vocabularySectionPicker
                     Spacer(minLength: 20)
                     vocabularySectionToolbar
+                    Button(L("纠错参考", "References")) { showsCorrectionReferences = true }
+                        .help(L("查看或移除已确认的纠错参考", "Review or remove confirmed spelling references"))
                 }
                 .padding(.bottom, 8)
 
@@ -286,6 +289,7 @@ struct VocabularyTab: View {
                 }
             }
         } // ScrollViewReader
+        .sheet(isPresented: $showsCorrectionReferences) { CorrectionReferencesView() }
         .onAppear {
             hotwords = HotwordStorage.load()
             snippets = SnippetStorage.load()
@@ -1069,6 +1073,8 @@ struct VocabularyTab: View {
     private static let seededKey = "tf_snippetExampleSeeded"
 
     private func seedExampleIfNeeded() {
+        // A personal first run must not silently seed broad forced rewrites.
+        guard !AppDataNamespace.isPersonal else { return }
         guard !UserDefaults.standard.bool(forKey: Self.seededKey) else { return }
         UserDefaults.standard.set(true, forKey: Self.seededKey)
         guard snippets.isEmpty else { return }

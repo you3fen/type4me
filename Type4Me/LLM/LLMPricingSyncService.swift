@@ -31,7 +31,7 @@ final class LLMPricingSyncService {
         let directory = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
-        ).first!.appendingPathComponent("Type4Me", isDirectory: true)
+        ).first!.appendingPathComponent(AppDataNamespace.directoryName, isDirectory: true)
         self.cacheFileURL = directory.appendingPathComponent("llm-pricing-cache.json")
     }
 

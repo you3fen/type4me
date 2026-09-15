@@ -91,7 +91,7 @@ actor AskAnythingStore {
             let appSupport = FileManager.default.urls(
                 for: .applicationSupportDirectory,
                 in: .userDomainMask
-            ).first!.appendingPathComponent("Type4Me", isDirectory: true)
+            ).first!.appendingPathComponent(AppDataNamespace.directoryName, isDirectory: true)
             try? FileManager.default.createDirectory(
                 at: appSupport,
                 withIntermediateDirectories: true
