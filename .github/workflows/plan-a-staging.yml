@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 0
           sparse-checkout: |
             Type4Me
             Type4MeTests
@@ -34,7 +34,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = 5273afdee55260c65816a60b3086cc287f795f4d
+          git diff --exit-code 5273afdee55260c65816a60b3086cc287f795f4d HEAD -- Type4Me Type4MeTests Type4MeIntelliSenseCore docs
           mkdir -p ci-artifacts
           python3 - <<'PY'
           import gzip, hashlib, pathlib, subprocess
@@ -47,6 +47,10 @@ jobs:
           path = pathlib.Path('ci-artifacts/plan-a.patch'); path.write_bytes(patch)
           subprocess.run(['git','apply','--check',str(path)],check=True)
           subprocess.run(['git','apply',str(path)],check=True)
+          overlay = pathlib.Path('.github/plan-a-staging/native-compat.patch')
+          assert hashlib.sha256(overlay.read_bytes()).hexdigest() == 'ced643279512d3baa9145d617c9f85248f918765590f75734c994af804dc89e9'
+          subprocess.run(['git','apply','--check',str(overlay)],check=True)
+          subprocess.run(['git','apply',str(overlay)],check=True)
           PY
           git diff --check
           git config user.name 'github-actions[bot]'
