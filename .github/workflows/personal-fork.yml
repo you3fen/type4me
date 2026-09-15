@@ -1,0 +1,65 @@
+name: Personal fork checks
+
+on:
+  push:
+    branches: [feat/personal-dictation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: personal-fork-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-snapshot:
+    if: github.repository == 'you3fen/type4me'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            Type4Me
+            Type4MeTests
+            Type4MeIntelliSenseCore
+            Type4MeReviseCore
+            scripts
+            docs
+            .github
+          sparse-checkout-cone-mode: true
+      - name: Export source and provenance (no user data)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/type4me-source
+          python3 - <<'PY'
+          import json, pathlib, subprocess, zipfile
+          root = pathlib.Path.cwd()
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          files = subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0')
+          selected = []
+          with zipfile.ZipFile('/tmp/type4me-source/source.zip', 'w', zipfile.ZIP_DEFLATED) as out:
+              for raw in files:
+                  if not raw:
+                      continue
+                  name = raw.decode('utf-8')
+                  path = root / name
+                  if not path.is_file() or path.is_symlink():
+                      continue
+                  if path.suffix not in {'.swift', '.md', '.json', '.yml', '.yaml', '.sh', '.py', '.h', '.c', '.cpp', '.modulemap', '.plist', '.entitlements'} and path.name not in {'LICENSE', 'Package.resolved', 'module.modulemap'}:
+                      continue
+                  if path.stat().st_size > 2000000:
+                      continue
+                  out.write(path, name)
+                  selected.append(name)
+              out.writestr('SOURCE_SNAPSHOT.json', json.dumps({'commit': commit, 'files': selected, 'purpose': 'public source review; excludes binaries and all local user data'}, indent=2))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: personal-source-${{ github.sha }}
+          path: /tmp/type4me-source/source.zip
+          retention-days: 7
+          if-no-files-found: error
