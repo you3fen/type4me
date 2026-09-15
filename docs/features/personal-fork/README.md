@@ -45,7 +45,8 @@ abstain; this is intentional. Digit-bearing brand handling is case-independent.
 
 ## Isolation and build
 
-`TYPE4ME_PERSONAL_BUILD=1` uses:
+`TYPE4ME_PERSONAL_BUILD=1` without `TYPE4ME_DEV_BUILD=1` keeps the isolated
+preview namespace. `scripts/package-personal.sh` supplies this app identity:
 - App/Bundle: `Type4Me Personal` / `com.you3fen.type4me.personal`;
 - data: `~/Library/Application Support/Type4Me Personal/`;
 - Keychain services prefixed `com.you3fen.type4me.personal`;
@@ -62,6 +63,38 @@ source commit and data namespace. CI uses ad-hoc signing, not notarization or
 any developer's private signing certificate. Microphone/accessibility consent
 and real target-app behavior require user-side acceptance. App bundles from
 CI should be treated as test previews, not a validated replacement.
+
+### Personal build replacing an existing Dev app
+
+Set both `TYPE4ME_PERSONAL_BUILD=1` and `TYPE4ME_DEV_BUILD=1`. Personal identity
+and upstream-update blocking stay enabled, while data uses
+`~/Library/Application Support/Type4Me/` and Keychain services remain
+`com.type4me.grouped` / `com.type4me.scalar`. UserDefaults stays in the installed
+Dev bundle's domain; do not copy production preferences into it. Correction
+references and data backups follow the shared directory.
+
+Use the existing Dev packager in a clean cloud-only worktree, staging first:
+
+```bash
+TYPE4ME_PERSONAL_BUILD=1 TYPE4ME_DEV_BUILD=1 \
+APP_NAME="Type4Me Dev" APP_BUNDLE_ID=com.type4me.dev URL_SCHEME=type4me-dev \
+APP_PATH="/path/to/staging/Type4Me Dev.app" APP_BUILD=3093 \
+CODESIGN_IDENTITY="Type4Me Dev" ARCH=universal VARIANT=cloud \
+bash scripts/package-app.sh
+```
+
+The identity values above are examples: inspect the installed Dev app and reuse
+its name, bundle ID, scheme, certificate and designated requirement. Do not use
+`package-personal.sh` for this shared-data build. Verify the staged signature
+and requirement before quitting both apps, backing up the old Dev app, shared
+data (including correction references), consistent SQLite snapshots and both
+preference domains. Replace only the Dev app. Preserve Keychain access control;
+restore the old app if launch fails. Do not run stable and Dev simultaneously
+while checking the shared data.
+
+Run the namespace tests with both flags, personal only, Dev only and neither;
+run `DataBackupManagerTests` and `PersonalVocabularyIntegrationTests` for the
+shared personal Dev build. Tests use synthetic data and temporary stores.
 
 ## Tests and limits
 

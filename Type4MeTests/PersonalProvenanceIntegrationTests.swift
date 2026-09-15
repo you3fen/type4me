@@ -141,15 +141,13 @@ final class PersonalProvenanceIntegrationTests: XCTestCase {
         XCTAssertEqual(DataBackupManager.dataDirectory.lastPathComponent, AppDataNamespace.directoryName)
         XCTAssertEqual(DataBackupManager.backupRoot.lastPathComponent, AppDataNamespace.directoryName + " Backups")
         XCTAssertEqual(DataBackupManager.dataDirectory.deletingLastPathComponent(), DataBackupManager.backupRoot.deletingLastPathComponent())
-        // Inspect the executable target's actual flag; the test target does not
-        // inherit its Swift compilation conditions.
-        if AppDataNamespace.isPersonal {
-            XCTAssertEqual(DataBackupManager.dataDirectory.lastPathComponent, "Type4Me Personal")
-            XCTAssertEqual(DataBackupManager.backupRoot.lastPathComponent, "Type4Me Personal Backups")
-        } else {
-            XCTAssertEqual(DataBackupManager.dataDirectory.lastPathComponent, "Type4Me")
-            XCTAssertEqual(DataBackupManager.backupRoot.lastPathComponent, "Type4Me Backups")
-        }
+        #if TYPE4ME_PERSONAL_BUILD && !TYPE4ME_DEV_BUILD
+        XCTAssertEqual(DataBackupManager.dataDirectory.lastPathComponent, "Type4Me Personal")
+        XCTAssertEqual(DataBackupManager.backupRoot.lastPathComponent, "Type4Me Personal Backups")
+        #else
+        XCTAssertEqual(DataBackupManager.dataDirectory.lastPathComponent, "Type4Me")
+        XCTAssertEqual(DataBackupManager.backupRoot.lastPathComponent, "Type4Me Backups")
+        #endif
     }
 
     func testBackupPreservesReferencesAndNeverIncludesSiblingProfile() throws {

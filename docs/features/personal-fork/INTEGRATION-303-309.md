@@ -28,10 +28,10 @@ inputs of this subsequent integration.
 4. Keep the personal word list, explicit app-scoped spelling references,
    evidence-aware output guard, and #310 usage accounting. The default learning
    action is still not an unconditional global replacement.
-5. Backup source and destination follow `AppDataNamespace`: personal builds
+5. Backup source and destination follow `AppDataNamespace`: personal-only builds
    read `Type4Me Personal/` and write `Type4Me Personal Backups/`. Include
    `correction-references.json`. Flag-free builds retain the original profile
-   and backup names. No automatic production-to-personal import is added.
+   and backup names, as do personal + Dev builds. No automatic production-to-personal import is added.
 6. History contains the rule result before LLM processing and the rules that
    actually ran. Old rows remain unknown rather than inferred from today's
    dictionary. These local history fields can contain user vocabulary; they
