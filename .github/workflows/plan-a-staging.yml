@@ -48,7 +48,7 @@ jobs:
           subprocess.run(['git','apply','--check',str(path)],check=True)
           subprocess.run(['git','apply',str(path)],check=True)
           overlay = pathlib.Path('.github/plan-a-staging/native-compat.patch')
-          assert hashlib.sha256(overlay.read_bytes()).hexdigest() == 'ced643279512d3baa9145d617c9f85248f918765590f75734c994af804dc89e9'
+          assert hashlib.sha256(overlay.read_bytes()).hexdigest() == '7144994e835d5924d6f0aaa0c3421d12741328919e5b54530e8d16092898e76b'
           subprocess.run(['git','apply','--check',str(overlay)],check=True)
           subprocess.run(['git','apply',str(overlay)],check=True)
           PY

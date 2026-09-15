@@ -23,3 +23,19 @@
          }
          for item in ordered {
              let index = item.index, rawTerm = item.term
+--- a/Type4Me/Services/HotwordStorage.swift
++++ b/Type4Me/Services/HotwordStorage.swift
+@@ -128,7 +128,12 @@
+ 
+     /// Persist user hotwords and surface file-system failures to callers that
+     /// need all-or-nothing behavior (for example correction learning).
+-    static func saveOrThrow(_ words: [String], notify: Bool = true) throws {
++    static func saveOrThrow(_ words: [String]) throws {
++        try saveOrThrow(words, notify: true)
++    }
++
++    /// The explicit overload keeps existing function references source-compatible.
++    static func saveOrThrow(_ words: [String], notify: Bool) throws {
+         try writeFileOrThrow(words, to: userFileURL)
+         cacheLock.lock()
+         cachedUser = nil
