@@ -48,7 +48,7 @@ jobs:
           subprocess.run(['git','apply','--check',str(path)],check=True)
           subprocess.run(['git','apply',str(path)],check=True)
           overlay = pathlib.Path('.github/plan-a-staging/native-compat.patch')
-          assert hashlib.sha256(overlay.read_bytes()).hexdigest() == '7144994e835d5924d6f0aaa0c3421d12741328919e5b54530e8d16092898e76b'
+          assert hashlib.sha256(overlay.read_bytes()).hexdigest() == '7d7492258a5156ffcf6bd2c3e905832b5cd28af9c34245bf9b247684604327eb'
           subprocess.run(['git','apply','--check',str(overlay)],check=True)
           subprocess.run(['git','apply',str(overlay)],check=True)
           PY
@@ -63,6 +63,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export CFFIXED_USER_HOME="$RUNNER_TEMP/plan-a-hotkey-probe-home"
+          mkdir -p "$CFFIXED_USER_HOME"
+          swift test --filter 'HotkeyStateMachineTests/testScenario5_CleanHoldPastDelayStartsAndStopsNormallyOnReduction' 2>&1 | tee ci-artifacts/hotkey-probe-build.log
+          for attempt in 1 2 3 4 5; do
+            swift test --skip-build --filter 'HotkeyStateMachineTests/testScenario5_CleanHoldPastDelayStartsAndStopsNormallyOnReduction' 2>&1 | tee "ci-artifacts/hotkey-probe-$attempt.log"
+          done
           export CFFIXED_USER_HOME="$RUNNER_TEMP/plan-a-personal-dev-home"
           mkdir -p "$CFFIXED_USER_HOME"
           swift test 2>&1 | tee ci-artifacts/personal-dev-tests.log

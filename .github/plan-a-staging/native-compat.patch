@@ -39,3 +39,18 @@
          try writeFileOrThrow(words, to: userFileURL)
          cacheLock.lock()
          cachedUser = nil
+--- a/Type4Me/UI/Settings/SmartCorrectionSheet.swift
++++ b/Type4Me/UI/Settings/SmartCorrectionSheet.swift
+@@ -62,8 +62,10 @@
+     }
+ 
+     private var selectedCount: Int {
+-        (learningScope == .hotwordAndMapping
+-            ? snippetSuggestions.filter { $0.isSelected && !$0.isDuplicate }.count : 1)
++        // The explicitly entered pair is always part of this confirmation;
++        // no generated alias has to be selected to save that pair.
++        1 + (learningScope == .hotwordAndMapping
++            ? snippetSuggestions.filter { $0.isSelected && !$0.isDuplicate }.count : 0)
+         + hotwordSuggestions.filter { $0.isSelected && !$0.isDuplicate }.count
+     }
+ 
