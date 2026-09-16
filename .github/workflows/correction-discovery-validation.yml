@@ -1,0 +1,149 @@
+name: Correction discovery isolated validation
+on:
+  push:
+    branches: [fix/correction-discovery]
+    paths: ['.github/correction-discovery-staging/**', '.github/workflows/correction-discovery-validation.yml']
+permissions:
+  contents: write
+concurrency:
+  group: correction-discovery-validation
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.repository == 'you3fen/type4me' && github.ref == 'refs/heads/fix/correction-discovery'
+    runs-on: macos-26
+    timeout-minutes: 40
+    env:
+      TYPE4ME_PERSONAL_BUILD: '1'
+      TYPE4ME_DEV_BUILD: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          sparse-checkout: |
+            Type4Me
+            Type4MeTests
+            Type4MeUI
+            Type4MeIntelliSenseCore
+            Type4MeReviseCore
+            scripts
+            docs
+            .github
+      - name: Verify exact base and prepare candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code 727a36355d7ce7e630824835d7ad32cdcbb5492a HEAD -- Type4Me Type4MeTests Type4MeIntelliSenseCore docs
+          mkdir -p ci-artifacts
+          python3 - <<'PY'
+          import gzip, hashlib, pathlib, subprocess
+          folder = pathlib.Path('.github/correction-discovery-staging')
+          packed = b''.join(p.read_bytes() for p in sorted(folder.glob('patch-*.bin')))
+          assert hashlib.sha256(packed).hexdigest() == '1daaf86e433e65725b690899da9df4ff078b31511927b035b10427d7557211b2'
+          patch = gzip.decompress(packed)
+          assert hashlib.sha256(patch).hexdigest() == 'e48751a4b642eefcc8cf678c4218deb4e1c02bf9f89df2a8c38cbb93744965c3'
+          path = pathlib.Path('ci-artifacts/submitted.patch'); path.write_bytes(patch)
+          for p in [path] + sorted(folder.glob('overlay-*.patch')):
+              subprocess.run(['git','apply','--check',str(p)],check=True)
+              subprocess.run(['git','apply',str(p)],check=True)
+          PY
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -r .github/correction-discovery-staging .github/workflows/correction-discovery-validation.yml
+          git add Type4Me Type4MeTests docs/features/personal-fork/CORRECTION-DISCOVERY.md
+          git commit -m 'fix: restore bounded immediate correction discovery and preserve installed Dev fixes'
+          git rev-parse HEAD > ci-artifacts/candidate-sha.txt
+          git diff 727a36355d7ce7e630824835d7ad32cdcbb5492a HEAD -- Type4Me Type4MeTests docs > ci-artifacts/combined.patch
+          { git rev-parse HEAD; git rev-parse HEAD^{tree}; sw_vers; xcodebuild -version; swift --version; } | tee ci-artifacts/provenance.txt
+      - name: Focused correction discovery regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CFFIXED_USER_HOME="$RUNNER_TEMP/correction-discovery-focused-home"
+          mkdir -p "$CFFIXED_USER_HOME"
+          swift test --filter CorrectionDiscoveryRegressionTests 2>&1 | tee ci-artifacts/discovery-tests.log
+      - name: Full offline personal Dev tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CFFIXED_USER_HOME="$RUNNER_TEMP/correction-discovery-full-home"
+          mkdir -p "$CFFIXED_USER_HOME"
+          swift test 2>&1 | tee ci-artifacts/personal-dev-tests.log
+      - name: Flag-free compatibility tests
+        shell: bash
+        env:
+          TYPE4ME_PERSONAL_BUILD: '0'
+          TYPE4ME_DEV_BUILD: '0'
+        run: |
+          set -euo pipefail
+          export CFFIXED_USER_HOME="$RUNNER_TEMP/correction-discovery-compat-home"
+          mkdir -p "$CFFIXED_USER_HOME"
+          swift test --scratch-path "$RUNNER_TEMP/correction-discovery-compat-build" --filter 'CorrectionDiscoveryRegressionTests|CorrectionLearningBoundaryRegressionTests|VocabularyPlanA|CorrectionReferenceTests|ASRCredentialValidationTests|TerminalASRErrorPresentationTests' 2>&1 | tee ci-artifacts/compatibility-tests.log
+      - name: Build universal Dev bundle without installation
+        shell: bash
+        env:
+          ARCH: universal
+          VARIANT: cloud
+          APP_FLAVOR: public
+          APP_NAME: Type4Me Dev CI
+          APP_BUNDLE_ID: com.type4me.dev
+          URL_SCHEME: type4me-dev
+          CODESIGN_IDENTITY: '-'
+        run: |
+          set -euo pipefail
+          export CFFIXED_USER_HOME="$RUNNER_TEMP/correction-discovery-package-home"
+          mkdir -p "$CFFIXED_USER_HOME"
+          export APP_PATH="$PWD/dist/Type4Me Dev CI.app"
+          bash scripts/package-app.sh 2>&1 | tee ci-artifacts/package.log
+          /usr/libexec/PlistBuddy -c "Add :Type4MeSourceCommit string $(git rev-parse HEAD)" "$APP_PATH/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Add :Type4MeDataNamespace string Type4Me' "$APP_PATH/Contents/Info.plist"
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --deep --strict "$APP_PATH"
+          lipo -info "$APP_PATH/Contents/MacOS/Type4Me" | tee ci-artifacts/architectures.txt
+          /usr/libexec/PlistBuddy -c Print "$APP_PATH/Contents/Info.plist" > ci-artifacts/Info.plist.txt
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" ci-artifacts/compile-only-DO-NOT-INSTALL.zip
+          echo 'Ad-hoc compile evidence only. Preserve installed Dev signing identity and data namespace; do not install this archive over it.' > ci-artifacts/DO-NOT-INSTALL.txt
+      - name: Export source and evidence
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p ci-artifacts
+          python3 - <<'PY'
+          import hashlib, json, pathlib, subprocess, zipfile
+          root = pathlib.Path.cwd(); manifest = {}
+          with zipfile.ZipFile('ci-artifacts/source.zip','w',zipfile.ZIP_DEFLATED) as archive:
+              for raw in subprocess.check_output(['git','ls-files','-z']).split(b'\0'):
+                  if not raw: continue
+                  name = raw.decode(); p = root/name
+                  if p.is_file() and not p.is_symlink() and p.stat().st_size < 2000000 and (p.suffix in {'.swift','.md','.json','.sh','.yml','.plist','.entitlements'} or p.name == 'LICENSE'):
+                      archive.write(p,name)
+                      manifest[name] = hashlib.sha256(p.read_bytes()).hexdigest()
+          pathlib.Path('ci-artifacts/source-manifest.json').write_text(json.dumps(manifest,indent=2))
+          PY
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: correction-discovery-evidence-${{ github.sha }}
+          path: ci-artifacts/
+          retention-days: 14
+          if-no-files-found: error
+      - name: Publish successful candidate only to this fix branch
+        if: success()
+        shell: bash
+        env:
+          PUBLISH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'you3fen/type4me'
+          test "$GITHUB_REF" = 'refs/heads/fix/correction-discovery'
+          test "$(git rev-parse HEAD^)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$(cat ci-artifacts/candidate-sha.txt)"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          auth="$(printf 'x-access-token:%s' "$PUBLISH_TOKEN" | base64 | tr -d '\n')"
+          url='https://github.com/you3fen/type4me.git'
+          current="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote "$url" refs/heads/fix/correction-discovery | cut -f1)"
+          test "$current" = "$GITHUB_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push "$url" HEAD:refs/heads/fix/correction-discovery
