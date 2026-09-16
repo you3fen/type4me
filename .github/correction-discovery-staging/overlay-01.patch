@@ -1,0 +1,107 @@
+diff --git a/Type4Me/Services/CorrectionLearning.swift b/Type4Me/Services/CorrectionLearning.swift
+index b70e2bb..a30dd40 100644
+--- a/Type4Me/Services/CorrectionLearning.swift
++++ b/Type4Me/Services/CorrectionLearning.swift
+@@ -780,6 +780,9 @@ final class PostInjectionLearningCoordinator: NSObject {
+         DebugFileLogger.log(
+             "correction observer ending: record=\(observation.context.sourceRecordID) reason=\(reason.rawValue)"
+         )
++        let finalization = CorrectionFinalizationDecision(
++            requested: reason, pendingReset: transientResetReason
++        )
+         // Clear active first. All callbacks run on MainActor, so this is the
+         // single atomic finalization gate for every end path.
+         active = nil
+@@ -797,9 +800,8 @@ final class PostInjectionLearningCoordinator: NSObject {
+         candidatePresentationTask = nil
+         pendingCorrectionCandidate = nil
+ 
+-        var effectiveReason = reason
+-        if reason != .valueCleared,
+-           reason != .structureChanged,
++        var effectiveReason = finalization.reason
++        if finalization.shouldCaptureFinalSnapshot,
+            let currentSnapshot = copyObservedContentSnapshot(
+                for: observation
+            ) {
+@@ -1055,6 +1057,9 @@ final class PostInjectionLearningCoordinator: NSObject {
+         candidatePresentationTask = nil
+         stableWindowTask = nil
+         pendingCorrectionCandidate = nil
++        // A visible card also belongs to the old snapshot. hide() cancels its
++        // callbacks without pretending that the user explicitly ignored it.
++        panelController?.hide()
+     }
+ 
+     private func isObservedElementFocused(_ observation: ActiveObservation) -> Bool {
+@@ -1235,9 +1240,6 @@ final class PostInjectionLearningCoordinator: NSObject {
+             return
+         }
+         let candidate = pending.candidate
+-        DebugFileLogger.log(
+-            "correction candidate presented: record=\(candidate.sourceRecordID) scope=\(candidate.learningScope.rawValue)"
+-        )
+         pendingCorrectionCandidate = nil
+         handledCorrectionCandidate = candidate
+         Task { await UserEditObservationMetrics.shared.record(.candidateDetected) }
+@@ -1262,6 +1264,9 @@ final class PostInjectionLearningCoordinator: NSObject {
+                 self?.panelController?.hide()
+             }
+         )
++        DebugFileLogger.log(
++            "correction candidate presented: record=\(candidate.sourceRecordID) scope=\(candidate.learningScope.rawValue)"
++        )
+     }
+ 
+     private func settleHistoryAndExpression(
+diff --git a/Type4Me/Services/ImmediateCorrectionEvidence.swift b/Type4Me/Services/ImmediateCorrectionEvidence.swift
+index 05a615e..77320ed 100644
+--- a/Type4Me/Services/ImmediateCorrectionEvidence.swift
++++ b/Type4Me/Services/ImmediateCorrectionEvidence.swift
+@@ -214,3 +214,16 @@ struct CorrectionPresentationGate: Equatable, Sendable {
+         return analysisReady
+     }
+ }
++
++/// An unresolved reset must not be sampled as a fresh edit by next-recording,
++/// cancellation or timeout finalization. Preserve the last reliable old field.
++struct CorrectionFinalizationDecision: Equatable, Sendable {
++    let reason: UserEditObservationEndReason
++    let shouldCaptureFinalSnapshot: Bool
++
++    init(requested: UserEditObservationEndReason, pendingReset: UserEditObservationEndReason?) {
++        reason = pendingReset ?? requested
++        shouldCaptureFinalSnapshot = pendingReset == nil
++            && requested != .valueCleared && requested != .structureChanged
++    }
++}
+diff --git a/Type4MeTests/CorrectionDiscoveryRegressionTests.swift b/Type4MeTests/CorrectionDiscoveryRegressionTests.swift
+index 8b61158..43ef154 100644
+--- a/Type4MeTests/CorrectionDiscoveryRegressionTests.swift
++++ b/Type4MeTests/CorrectionDiscoveryRegressionTests.swift
+@@ -215,6 +215,25 @@ final class CorrectionDiscoveryRegressionTests: XCTestCase {
+         }
+     }
+ 
++    func testUnresolvedResetNeverSamplesNextMessageDuringOtherFinalizationPaths() {
++        for requested: UserEditObservationEndReason in [
++            .nextRecording, .cancelled, .timeout, .reviseStarted,
++            .settingsDisabled, .appTerminated, .readFailure
++        ] {
++            for pending: UserEditObservationEndReason in [.valueCleared, .structureChanged] {
++                let decision = CorrectionFinalizationDecision(requested: requested, pendingReset: pending)
++                XCTAssertEqual(decision.reason, pending)
++                XCTAssertFalse(decision.shouldCaptureFinalSnapshot)
++            }
++        }
++    }
++
++    func testNormalFinalizationKeepsExistingLastSnapshotBehavior() {
++        XCTAssertTrue(CorrectionFinalizationDecision(requested: .nextRecording, pendingReset: nil).shouldCaptureFinalSnapshot)
++        XCTAssertFalse(CorrectionFinalizationDecision(requested: .valueCleared, pendingReset: nil).shouldCaptureFinalSnapshot)
++        XCTAssertFalse(CorrectionFinalizationDecision(requested: .structureChanged, pendingReset: nil).shouldCaptureFinalSnapshot)
++    }
++
+     func testDiscoveryDoesNotWriteAndSoftConfirmationDoesNotModifyMappings() async throws {
+         let persistence = DiscoveryMemory()
+         let previous = persistence.mappings
