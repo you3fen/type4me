@@ -108,8 +108,9 @@ enum ImmediateCorrectionAnalyzer {
         return .candidate(wrongText: wrong, correctedText: corrected)
     }
 
-    /// The immediate observer may offer a narrowly-scoped confirmation for a
-    /// single mixed-script lexical edit that misses Han segmentation or affinity. It deliberately
+    /// The immediate observer may offer a narrowly-scoped confirmation for
+    /// bounded pronunciation confusions, observed whole-term edits, or a single
+    /// mixed-script lexical edit that misses Han segmentation or affinity. It deliberately
     /// records an app-scoped reference after confirmation; it never
     /// promotes a high similarity score into global replacement consent.
     static func analyzeForImmediateCandidate(
@@ -117,8 +118,16 @@ enum ImmediateCorrectionAnalyzer {
         edited: String,
         chineseSegmenter: any ChineseWordSegmenting = HybridChineseWordSegmenter.shared,
         confirmedMappings: [CorrectionMapping]? = nil,
-        diagnosticRecordID: String? = nil
+        diagnosticRecordID: String? = nil,
+        editBoundary: CorrectionEditBoundary? = nil
     ) async -> ImmediateCorrectionCandidateResult {
+        if let pair = editBoundary?.suggestion(original: original, edited: edited) {
+            if let diagnosticRecordID {
+                DebugFileLogger.log("correction suggestion admitted: record=\(diagnosticRecordID) path=observedBoundary")
+            }
+            return .candidate(wrongText: pair.wrong, correctedText: pair.corrected,
+                              learningScope: .softReference)
+        }
         let strict = await analyze(
             original: original,
             edited: edited,
@@ -132,6 +141,21 @@ enum ImmediateCorrectionAnalyzer {
                 correctedText: corrected,
                 learningScope: .softReference
             )
+        }
+        // A narrowly enumerated pronunciation confusion can justify asking the
+        // user, but is not high-confidence affinity for batch/global reuse.
+        if strict == .rejected(.lowAffinity),
+           UserEditClassifier.classify(original: original, edited: edited) == .lexicalCorrection,
+           case .candidate(let wrong, let corrected) = CorrectionDiffAnalyzer.analyze(
+               baseline: original,
+               injectedRange: NSRange(original.startIndex..<original.endIndex, in: original),
+               current: edited
+           ),
+           CorrectionSuggestionPhonetics.isPlausible(wrong: wrong, corrected: corrected) {
+            if let diagnosticRecordID {
+                DebugFileLogger.log("correction suggestion admitted: record=\(diagnosticRecordID) path=boundedPhonetics")
+            }
+            return .candidate(wrongText: wrong, correctedText: corrected, learningScope: .softReference)
         }
         guard isImmediateSuggestionEligibleRejection(strict),
               UserEditClassifier.classify(original: original, edited: edited) == .lexicalCorrection,

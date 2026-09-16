@@ -37,6 +37,15 @@ enum UserEditClassifier {
         }
     }
 
+    /// The content guards are also required when an observed edit boundary
+    /// resolves a minimal single-Han-character diff. Do not confuse the generic
+    /// edit-size heuristic with a factual/sensitive-content rejection.
+    static func hasProtectedContentChange(original: String, edited: String) -> Bool {
+        isSensitive(original) || isSensitive(edited)
+            || factualTokens(in: original) != factualTokens(in: edited)
+            || negationPolarity(in: original) != negationPolarity(in: edited)
+    }
+
     static func isSensitive(_ text: String) -> Bool {
         let patterns = [
             #"\b[\w.%+-]+@[\w.-]+\.[A-Za-z]{2,}\b"#,

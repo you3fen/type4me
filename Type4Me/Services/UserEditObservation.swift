@@ -13,6 +13,7 @@ struct UserEditObservationTiming: Equatable, Sendable {
     var observationTimeout: Duration
     var resolverBudget: Duration
     var evidenceDecayHalfLifeDays: Double
+    var transientReplacementGrace: Duration = .seconds(4)
 
     static let production = Self(
         stableWindow: .milliseconds(800),

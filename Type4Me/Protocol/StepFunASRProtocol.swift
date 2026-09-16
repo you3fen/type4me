@@ -1,11 +1,16 @@
 import Foundation
 
-enum StepFunASRError: Error, LocalizedError, Equatable {
+enum StepFunASRError: Error, LocalizedError, Equatable, TerminalASRError {
     case invalidConfig
     case handshakeTimedOut
     case closedBeforeSessionReady(code: Int, reason: String?)
     case invalidResponse
     case serverError(code: String?, message: String)
+
+    var isTerminalServerError: Bool {
+        if case .serverError = self { return true }
+        return false
+    }
 
     var errorDescription: String? {
         switch self {

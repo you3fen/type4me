@@ -23,6 +23,8 @@ final class TerminalASRErrorPresentationTests: XCTestCase {
         XCTAssertFalse((VolcProtocolError.decompressionFailed as TerminalASRError).isTerminalServerError)
 
         XCTAssertNil(URLError(.networkConnectionLost) as? TerminalASRError)
+        XCTAssertFalse(StepFunASRError.invalidResponse.isTerminalServerError)
+        XCTAssertFalse(StepFunASRError.handshakeTimedOut.isTerminalServerError)
     }
 
     /// `Type4MeApp.userFacingMessage(for:)` reads `LocalizedError.errorDescription`,
@@ -43,6 +45,22 @@ final class TerminalASRErrorPresentationTests: XCTestCase {
     }
 
     // MARK: - Runtime presentation
+
+    func testStepFunServerRejectionDoesNotBecomeConnectionRecovery() async throws {
+        let error = StepFunASRError.serverError(code: "insufficient_quota", message: "quota exhausted")
+        let suppliedError: any Error = error
+        XCTAssertTrue((suppliedError as? TerminalASRError)?.isTerminalServerError == true)
+        let session = RecognitionSession()
+        let received = EventBox()
+        await session.setOnASREvent { event in received.record(event) }
+        await session.setState(.recording)
+
+        await session.ingestASREventForTesting(.error(error))
+        try await waitUntil { received.errors.count == 1 }
+        XCTAssertEqual(received.errors.first as? StepFunASRError, error)
+        try await waitUntil { await session.state == .idle }
+        XCTAssertEqual(received.recoveryCount, 0)
+    }
 
     /// The user-facing path, driven through the session rather than asserted on
     /// parser output: a terminal server error during recording must reach the
@@ -72,11 +90,17 @@ final class TerminalASRErrorPresentationTests: XCTestCase {
     private final class EventBox: @unchecked Sendable {
         private let lock = NSLock()
         private var storage: [Error] = []
+        private var recoveries = 0
 
         func record(_ event: RecognitionEvent) {
-            guard case .error(let error) = event else { return }
             lock.lock(); defer { lock.unlock() }
-            storage.append(error)
+            if case .error(let error) = event { storage.append(error) }
+            if case .recoveryStarted = event { recoveries += 1 }
+        }
+
+        var recoveryCount: Int {
+            lock.lock(); defer { lock.unlock() }
+            return recoveries
         }
 
         var errors: [Error] {
