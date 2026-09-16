@@ -11,6 +11,7 @@ struct ASRProviderDetailView: View, SettingsCardHelpers {
     @State private var hasStoredCredentials = false
     @State private var customASRModeFields: Set<String> = []
     @State private var asrTestStatus: SettingsTestStatus = .idle
+    @AppStorage("tf_language") private var language = AppLanguage.systemDefault
     @State private var testTask: Task<Void, Never>?
     @State private var volcResourceHint: String?
 
@@ -174,13 +175,13 @@ struct ASRProviderDetailView: View, SettingsCardHelpers {
             )
         case .stepfun:
             return L(
-                "实时流式识别使用开放平台按量付费 API Key，不支持 Step Plan 路径。",
-                "Real-time streaming recognition uses a standard pay-as-you-go API key and is not available through the Step Plan endpoint."
+                "实时模型：stepaudio-2.5-asr-stream，当前按中文会话请求。使用开放平台按量付费 API Key，不支持 Step Plan 路径。",
+                "Realtime model: stepaudio-2.5-asr-stream, currently requested with Chinese as the session language. Uses a standard pay-as-you-go API key, not the Step Plan endpoint."
             )
         case .stepfunBatch:
             return L(
-                "松开快捷键后提交完整录音；Step Plan 与标准按量付费需显式选择",
-                "The complete recording is submitted after you release the hotkey; explicitly choose Step Plan or standard pay-as-you-go"
+                "批量模型：stepaudio-2.5-asr。松开快捷键后提交完整录音；请按账户选择 Step Plan 或标准按量付费。配置检查不验证转录权限。",
+                "Batch model: stepaudio-2.5-asr. Submits the recording after you release the hotkey; choose Step Plan or standard pay-as-you-go for your account. Configuration checks do not verify transcription access."
             )
         case .mimo:
             return L(
@@ -195,6 +196,7 @@ struct ASRProviderDetailView: View, SettingsCardHelpers {
     // MARK: - Body
 
     var body: some View {
+        let _ = language
         VStack(alignment: .leading, spacing: 14) {
             headerSection
 
@@ -392,7 +394,8 @@ struct ASRProviderDetailView: View, SettingsCardHelpers {
                 }
 
                 testButton(
-                    L("测试连接", "Test"),
+                    ASRProviderRegistry.credentialValidationIsLocalOnly(for: provider)
+                        ? L("检查配置", "Check configuration") : L("测试连接", "Test"),
                     status: asrTestStatus,
                     isEnabled: (hasASRCredentials || isZeroCredentialProvider) && isASRProviderAvailable
                 ) { testASRConnection() }
@@ -824,13 +827,13 @@ struct ASRProviderDetailView: View, SettingsCardHelpers {
                     asrTestStatus = .failed(L("不支持", "Unsupported"))
                     return
                 }
-                try await ASRProviderRegistry.validateCredentials(
+                let result = try await ASRProviderRegistry.validateCredentials(
                     for: currentProvider,
                     config: config,
                     options: currentASRRequestOptions(enablePunc: false)
                 )
                 guard !Task.isCancelled else { return }
-                asrTestStatus = .success
+                asrTestStatus = result == .connected ? .success : .configurationOnly
             } catch {
                 guard !Task.isCancelled else { return }
                 asrTestStatus = .failed(Self.describeConnectionError(error))

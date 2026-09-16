@@ -308,12 +308,18 @@ extension View {
 // MARK: - Shared Types
 
 enum SettingsTestStatus: Equatable {
-    case idle, testing, saved, success, failed(String)
+    case idle, testing, saved, success, configurationOnly, failed(String)
+
+    var informationalMessage: String? {
+        guard self == .configurationOnly else { return nil }
+        return L("仅检查了本地配置，尚未验证账户权限或余额。", "Local configuration checked; account access and balance are not verified.")
+    }
 
     var buttonForeground: Color {
         switch self {
         case .idle, .testing:  return TF.settingsText
         case .saved, .success: return TF.settingsAccentGreen
+        case .configurationOnly: return TF.settingsAccentAmber
         case .failed:          return TF.settingsAccentRed
         }
     }
@@ -322,6 +328,7 @@ enum SettingsTestStatus: Equatable {
         switch self {
         case .idle, .testing:  return TF.settingsCardAlt
         case .saved, .success: return TF.settingsAccentGreen.opacity(0.12)
+        case .configurationOnly: return TF.settingsAccentAmber.opacity(0.12)
         case .failed:          return TF.settingsAccentRed.opacity(0.12)
         }
     }
@@ -792,6 +799,10 @@ extension SettingsCardHelpers {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 11))
                     Text(L("连接成功", "Connected"))
+                case .configurationOnly:
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 11))
+                    Text(L("配置已检查", "Configuration checked"))
                 case .failed:
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 10))
@@ -819,6 +830,12 @@ extension SettingsCardHelpers {
 
     @ViewBuilder
     func testStatusMessage(status: SettingsTestStatus) -> some View {
+        if let message = status.informationalMessage {
+            Text(message)
+                .font(.system(size: 11))
+                .foregroundStyle(TF.settingsAccentAmber)
+                .fixedSize(horizontal: false, vertical: true)
+        }
         if case .failed(let msg) = status {
             HStack(spacing: 4) {
                 Image(systemName: "exclamationmark.circle.fill")

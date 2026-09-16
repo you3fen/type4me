@@ -48,6 +48,11 @@ struct ASRProviderCapabilities: Sendable, Equatable {
 
 enum ASRProviderRegistry {
 
+    enum CredentialValidationResult: Equatable {
+        case connected
+        case configurationOnly
+    }
+
     struct ProviderEntry: Sendable {
         let configType: any ASRProviderConfig.Type
         let createClient: (@Sendable () -> any SpeechRecognizer)?
@@ -221,20 +226,27 @@ enum ASRProviderRegistry {
         supports(mode, for: provider) ? mode : .direct
     }
 
+    static func credentialValidationIsLocalOnly(for provider: ASRProvider) -> Bool {
+        all[provider]?.validateCredentials == nil && !capabilities(for: provider).isStreaming
+    }
+
+    @discardableResult
     static func validateCredentials(
         for provider: ASRProvider,
         config: any ASRProviderConfig,
         options: ASRRequestOptions
-    ) async throws {
+    ) async throws -> CredentialValidationResult {
         if let validator = all[provider]?.validateCredentials {
             try await validator(config, options)
-            return
+            return .connected
         }
         guard let client = createClient(for: provider) else {
             throw MiMoASRError.invalidConfig
         }
         try await client.connect(config: config, options: options)
         await client.disconnect()
+        // Batch connect() validates local configuration, not service access.
+        return credentialValidationIsLocalOnly(for: provider) ? .configurationOnly : .connected
     }
 
     static func unsupportedReason(for mode: ProcessingMode, provider: ASRProvider) -> String? {

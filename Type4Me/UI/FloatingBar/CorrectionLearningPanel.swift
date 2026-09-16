@@ -75,6 +75,10 @@ final class CorrectionLearningPanelController {
         let frame = NSRect(x: 0, y: 0, width: 500, height: 290)
         panel = CorrectionLearningPanel(contentRect: frame)
         let hosting = NSHostingView(rootView: CorrectionLearningCardView(state: state))
+        // Keep the panel's explicit size, as FloatingBarPanel does. Otherwise
+        // SwiftUI's intrinsic sizing can grow the window below the screen and
+        // hide the scope picker and confirmation buttons.
+        hosting.sizingOptions = []
         hosting.frame = frame
         hosting.autoresizingMask = [.width, .height]
         panel.contentView = hosting

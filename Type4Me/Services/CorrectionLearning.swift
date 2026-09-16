@@ -562,6 +562,7 @@ final class PostInjectionLearningCoordinator: NSObject {
         let context: CorrectionObservationContext
         let observer: AXObserver
         let observesElementDestruction: Bool
+        let observesSelectionChanges: Bool
         var options: PostInjectionLearningOptions
         let startedAt: Date
         let baselineVisibleValue: String
@@ -574,6 +575,7 @@ final class PostInjectionLearningCoordinator: NSObject {
         var latestResolution: InjectedTextResolution
         var hasObservedVisibleChanges: Bool
         var lastSelectedRange: NSRange?
+        var editBoundaries = CorrectionEditBoundaryTracker()
     }
 
     private struct PendingCorrectionCandidate {
@@ -586,6 +588,9 @@ final class PostInjectionLearningCoordinator: NSObject {
     private var stableWindowTask: Task<Void, Never>?
     private var readRetryTask: Task<Void, Never>?
     private var candidatePresentationTask: Task<Void, Never>?
+    private var transientResetTask: Task<Void, Never>?
+    private var transientResetReason: UserEditObservationEndReason?
+    private var presentationGate = CorrectionPresentationGate()
     private var pendingCorrectionCandidate: PendingCorrectionCandidate?
     private var handledCorrectionCandidate: CorrectionCandidate?
     /// Keep the panel truly lazy. `cancelObservation()` runs at the start of
@@ -678,6 +683,12 @@ final class PostInjectionLearningCoordinator: NSObject {
             refcon
         )
 
+        // Selection is optional: several editors expose only value changes.
+        // Keep their existing diff path, and use contiguous deletion as fallback.
+        let selectionStatus = AXObserverAddNotification(
+            observer, context.element, kAXSelectedTextChangedNotification as CFString, refcon
+        )
+
         CFRunLoopAddSource(
             CFRunLoopGetMain(),
             AXObserverGetRunLoopSource(observer),
@@ -687,6 +698,7 @@ final class PostInjectionLearningCoordinator: NSObject {
             context: context,
             observer: observer,
             observesElementDestruction: destructionStatus == .success,
+            observesSelectionChanges: selectionStatus == .success,
             options: options,
             startedAt: Date(),
             baselineVisibleValue: baselineProjection.text,
@@ -765,9 +777,19 @@ final class PostInjectionLearningCoordinator: NSObject {
             if hidePanel { panelController?.hide() }
             return
         }
+        DebugFileLogger.log(
+            "correction observer ending: record=\(observation.context.sourceRecordID) reason=\(reason.rawValue)"
+        )
+        let finalization = CorrectionFinalizationDecision(
+            requested: reason, pendingReset: transientResetReason
+        )
         // Clear active first. All callbacks run on MainActor, so this is the
         // single atomic finalization gate for every end path.
         active = nil
+        presentationGate.invalidate()
+        transientResetTask?.cancel()
+        transientResetTask = nil
+        transientResetReason = nil
         timeoutTask?.cancel()
         stableWindowTask?.cancel()
         readRetryTask?.cancel()
@@ -778,9 +800,8 @@ final class PostInjectionLearningCoordinator: NSObject {
         candidatePresentationTask = nil
         pendingCorrectionCandidate = nil
 
-        var effectiveReason = reason
-        if reason != .valueCleared,
-           reason != .structureChanged,
+        var effectiveReason = finalization.reason
+        if finalization.shouldCaptureFinalSnapshot,
            let currentSnapshot = copyObservedContentSnapshot(
                for: observation
            ) {
@@ -805,6 +826,12 @@ final class PostInjectionLearningCoordinator: NSObject {
             observation.context.element,
             kAXValueChangedNotification as CFString
         )
+        if observation.observesSelectionChanges {
+            AXObserverRemoveNotification(
+                observation.observer, observation.context.element,
+                kAXSelectedTextChangedNotification as CFString
+            )
+        }
         if observation.observesElementDestruction {
             AXObserverRemoveNotification(
                 observation.observer,
@@ -834,6 +861,27 @@ final class PostInjectionLearningCoordinator: NSObject {
         captureCurrentValue(isRetry: false)
     }
 
+    fileprivate func accessibilitySelectionDidChange(element: AXUIElement) {
+        guard var observation = active, observation.options.correctionEnabled,
+              CFEqual(observation.context.element, element),
+              let snapshot = copyObservedContentSnapshot(for: observation),
+              !snapshot.isPlaceholder,
+              snapshot.visibleValue == observation.baselineVisibleValue
+        else { return }
+        // AX ranges address raw UTF-16; project away editor sentinel characters.
+        let selection = snapshot.selectedRange.flatMap {
+            VisibleTextProjection.project(snapshot.rawValue).projectedRange(from: $0)
+        }
+        observation.editBoundaries.observeSelection(
+            original: observation.visibleInjectedText,
+            baselineFullValue: observation.baselineVisibleValue,
+            injectedRange: observation.visibleInjectedRange,
+            selectedRange: selection
+        )
+        observation.lastSelectedRange = snapshot.selectedRange
+        active = observation
+    }
+
     fileprivate func accessibilityElementWasDestroyed(element: AXUIElement) {
         guard let active, CFEqual(active.context.element, element) else { return }
         finalizeObservation(reason: .elementDestroyed, hidePanel: true)
@@ -857,6 +905,10 @@ final class PostInjectionLearningCoordinator: NSObject {
                 return
             }
             self.active = active
+            if !active.options.correctionEnabled {
+                self.invalidatePendingCandidate()
+                self.panelController?.hide()
+            }
         }
     }
 
@@ -871,6 +923,7 @@ final class PostInjectionLearningCoordinator: NSObject {
     private func captureCurrentValue(isRetry: Bool) {
         guard var observation = active else { return }
         guard let currentSnapshot = copyObservedContentSnapshot(for: observation) else {
+            invalidatePendingCandidate()
             if !isRetry {
                 readRetryTask?.cancel()
                 readRetryTask = Task { [weak self] in
@@ -890,18 +943,64 @@ final class PostInjectionLearningCoordinator: NSObject {
         }
         readRetryTask?.cancel()
         readRetryTask = nil
-        switch visibleTransition(currentSnapshot, observation: observation) {
-        case .valueCleared:
-            finalizeObservation(reason: .valueCleared, hidePanel: true)
-            return
-        case .structureChanged:
-            finalizeObservation(reason: .structureChanged, hidePanel: true)
+        let currentInjected = observedInjectedText(
+            baselineValue: observation.baselineVisibleValue,
+            injectedRange: observation.visibleInjectedRange,
+            injectedText: observation.visibleInjectedText,
+            currentValue: currentSnapshot.visibleValue
+        )
+        if let currentInjected {
+            observation.editBoundaries.observeValue(
+                original: observation.visibleInjectedText, current: currentInjected
+            )
+        }
+        let transition = visibleTransition(currentSnapshot, observation: observation)
+        let needsBoundaryRecovery = transientResetReason != nil
+            || transition == .valueCleared || transition == .structureChanged
+        // Normal keystrokes do not run phonetic/classification work on MainActor.
+        let boundaryPair = needsBoundaryRecovery ? currentInjected.flatMap {
+            observation.editBoundaries.boundary?.suggestion(
+                original: observation.visibleInjectedText, edited: $0
+            )
+        } : nil
+        if let resetReason = transientResetReason {
+            guard isObservedElementFocused(observation) else {
+                finalizeObservation(reason: resetReason, hidePanel: true)
+                return
+            }
+            // Do not restart the grace clock on IME updates. Only a validated
+            // replacement (or a complete undo) can return to observation.
+            guard (!currentSnapshot.isPlaceholder && boundaryPair != nil)
+                || currentSnapshot.visibleValue == observation.baselineVisibleValue else {
+                active = observation
+                return
+            }
+            transientResetTask?.cancel()
+            transientResetTask = nil
+            transientResetReason = nil
+        }
+        switch transition {
+        case .valueCleared, .structureChanged:
+            if !currentSnapshot.isPlaceholder, boundaryPair != nil { break }
+            let reason: UserEditObservationEndReason = currentSnapshot.visibleValue.isEmpty
+                ? .valueCleared : .structureChanged
+            if let currentInjected,
+               observation.editBoundaries.mayBridgeReset(
+                   original: observation.visibleInjectedText, current: currentInjected
+               ), isObservedElementFocused(observation) {
+                active = observation
+                beginTransientReset(reason: reason, observation: observation)
+            } else {
+                finalizeObservation(reason: reason, hidePanel: true)
+            }
             return
         case .unchanged:
             observation.lastRawFullValue = currentSnapshot.rawValue
             observation.lastSelectedRange = currentSnapshot.selectedRange
             active = observation
-            return
+            // A successful read retry must restart the quiet-period work that
+            // the failed read invalidated, even if the visible text is unchanged.
+            guard isRetry, observation.hasObservedVisibleChanges else { return }
         case .changed:
             break
         }
@@ -915,17 +1014,20 @@ final class PostInjectionLearningCoordinator: NSObject {
         )
         active = observation
 
-        candidatePresentationTask?.cancel()
-        candidatePresentationTask = nil
-        pendingCorrectionCandidate = nil
-        if observation.latestResolution.confidence != .ambiguous,
+        invalidatePendingCandidate()
+        let revision = presentationGate.revision
+        if observation.options.correctionEnabled,
+           observation.latestResolution.confidence != .ambiguous,
            observation.lastReliableVisibleInjectedText != observation.visibleInjectedText {
             let expectedText = observation.lastReliableVisibleInjectedText
             candidatePresentationTask = Task { [weak self] in
                 guard let self else { return }
                 try? await Task.sleep(for: self.timing.candidatePresentationDelay)
                 guard !Task.isCancelled else { return }
-                self.presentPendingCandidate(expectedText: expectedText)
+                self.candidatePresentationTask = nil
+                if self.presentationGate.reachedDeadline(revision: revision) {
+                    self.presentPendingCandidate(expectedText: expectedText)
+                }
             }
         }
 
@@ -945,6 +1047,45 @@ final class PostInjectionLearningCoordinator: NSObject {
                 return
             }
             self.analyzeStableValue()
+        }
+    }
+
+    private func invalidatePendingCandidate() {
+        presentationGate.invalidate()
+        candidatePresentationTask?.cancel()
+        stableWindowTask?.cancel()
+        candidatePresentationTask = nil
+        stableWindowTask = nil
+        pendingCorrectionCandidate = nil
+        // A visible card also belongs to the old snapshot. hide() cancels its
+        // callbacks without pretending that the user explicitly ignored it.
+        panelController?.hide()
+    }
+
+    private func isObservedElementFocused(_ observation: ActiveObservation) -> Bool {
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute as CFString, &focused
+        ) == .success, let focused else { return false }
+        return CFEqual(focused, observation.context.element)
+    }
+
+    private func beginTransientReset(
+        reason: UserEditObservationEndReason, observation: ActiveObservation
+    ) {
+        invalidatePendingCandidate()
+        panelController?.hide()
+        guard transientResetTask == nil else { return }
+        transientResetReason = reason
+        let recordID = observation.context.sourceRecordID
+        DebugFileLogger.log("correction edit reset deferred: record=\(recordID) reason=\(reason.rawValue)")
+        transientResetTask = Task { [weak self] in
+            // Bounded IME/retyping grace, not a new cross-message observation.
+            try? await Task.sleep(for: self?.timing.transientReplacementGrace ?? .seconds(4))
+            guard !Task.isCancelled, let self,
+                  self.active?.context.sourceRecordID == recordID,
+                  self.transientResetReason != nil else { return }
+            self.finalizeObservation(reason: reason, hidePanel: true)
         }
     }
 
@@ -1003,19 +1144,27 @@ final class PostInjectionLearningCoordinator: NSObject {
     private func analyzeStableValue() {
         guard let observation = active,
               observation.options.correctionEnabled,
+              transientResetReason == nil,
+              observation.latestResolution.confidence != .ambiguous,
               handledCorrectionCandidate == nil,
               observation.lastReliableVisibleInjectedText != observation.visibleInjectedText
         else { return }
         let sourceRecordID = observation.context.sourceRecordID
         let original = observation.visibleInjectedText
         let edited = observation.lastReliableVisibleInjectedText
+        let revision = presentationGate.revision
         Task { [weak self] in
             let result = await ImmediateCorrectionAnalyzer.analyzeForImmediateCandidate(
                 original: original,
                 edited: edited,
-                diagnosticRecordID: observation.context.sourceRecordID
+                diagnosticRecordID: observation.context.sourceRecordID,
+                editBoundary: observation.editBoundaries.boundary
             )
             guard let self,
+                  self.presentationGate.revision == revision,
+                  self.active?.options.correctionEnabled == true,
+                  self.active?.latestResolution.confidence != .ambiguous,
+                  self.transientResetReason == nil,
                   self.active?.context.sourceRecordID == sourceRecordID,
                   self.active?.lastReliableVisibleInjectedText == edited
             else { return }
@@ -1024,6 +1173,10 @@ final class PostInjectionLearningCoordinator: NSObject {
                 observation: observation,
                 observedText: edited
             )
+            if case .candidate = result,
+               self.presentationGate.analyzed(revision: revision) {
+                self.presentPendingCandidate(expectedText: edited)
+            }
         }
     }
 
@@ -1052,6 +1205,7 @@ final class PostInjectionLearningCoordinator: NSObject {
                     + "bundle=\(candidate.bundleIdentifier)"
             )
         case .rejected(let reason):
+            pendingCorrectionCandidate = nil
             DebugFileLogger.log(
                 "correction candidate rejected: record=\(observation.context.sourceRecordID) "
                     + "reason=\(reason.rawValue) bundle=\(observation.context.bundleIdentifier)"
@@ -1069,11 +1223,22 @@ final class PostInjectionLearningCoordinator: NSObject {
         candidatePresentationTask = nil
         guard handledCorrectionCandidate == nil,
               let active,
+              active.options.correctionEnabled,
+              transientResetReason == nil,
+              active.latestResolution.confidence != .ambiguous,
               active.lastReliableVisibleInjectedText == expectedText,
               let pending = pendingCorrectionCandidate,
               pending.observedText == expectedText
         else { return }
 
+        // An AX value notification may still be queued when the timer fires.
+        // Never display a candidate for text that is no longer in the editor.
+        guard let current = copyObservedContentSnapshot(for: active),
+              !current.isPlaceholder,
+              current.visibleValue == active.lastVisibleFullValue else {
+            captureCurrentValue(isRetry: false)
+            return
+        }
         let candidate = pending.candidate
         pendingCorrectionCandidate = nil
         handledCorrectionCandidate = candidate
@@ -1098,6 +1263,9 @@ final class PostInjectionLearningCoordinator: NSObject {
                 )
                 self?.panelController?.hide()
             }
+        )
+        DebugFileLogger.log(
+            "correction candidate presented: record=\(candidate.sourceRecordID) scope=\(candidate.learningScope.rawValue)"
         )
     }
 
@@ -1220,7 +1388,8 @@ final class PostInjectionLearningCoordinator: NSObject {
         else { return nil }
         let prefix = baseline.substring(to: injectedRange.location)
         let suffix = baseline.substring(from: NSMaxRange(injectedRange))
-        guard currentValue.hasPrefix(prefix), currentValue.hasSuffix(suffix) else {
+        guard currentValue.hasPrefix(prefix), currentValue.hasSuffix(suffix),
+              currentValue.count >= prefix.count + suffix.count else {
             return currentValue == baselineValue ? injectedText : nil
         }
         let start = currentValue.index(currentValue.startIndex, offsetBy: prefix.count)
@@ -1298,6 +1467,8 @@ private let correctionAXObserverCallback: AXObserverCallback = { _, element, not
         switch notification as String {
         case kAXValueChangedNotification:
             coordinator.accessibilityValueDidChange(element: element)
+        case kAXSelectedTextChangedNotification:
+            coordinator.accessibilitySelectionDidChange(element: element)
         case kAXUIElementDestroyedNotification:
             coordinator.accessibilityElementWasDestroyed(element: element)
         default:
