@@ -177,6 +177,15 @@ final class TextInjectionEngine: @unchecked Sendable {
                 outcome: outcome
             )
         }
+        if trackingMetadata != nil, context == nil {
+            // The pasted text could not be located in a focused editable field
+            // (focus moved, or the field is not readable), so delivery is
+            // unproven. Keep the text on the clipboard instead of restoring.
+            copyToClipboard(text, transient: false)
+            pendingClipboardRestore = nil
+            DebugFileLogger.log("injection unverified: pasted text not found in focused field; kept on clipboard")
+            return TrackedInjectionResult(outcome: .pasteAttemptedClipboardRetained, observationContext: nil)
+        }
         return TrackedInjectionResult(outcome: outcome, observationContext: context)
     }
 
