@@ -1105,40 +1105,6 @@ actor HistoryStore {
         return false
     }
 
-    @discardableResult
-    func updateRevisionUserEditObservation(
-        revisionID: String,
-        text: String?,
-        status: UserEditObservationStatus,
-        observedAt: Date?,
-        version: Int = UserEditObservationFormat.currentVersion
-    ) -> Bool {
-        let sql = """
-        UPDATE recognition_revisions
-        SET user_edited_text = ?,
-            user_edit_status = ?,
-            user_edit_observed_at = ?,
-            user_edit_version = ?
-        WHERE id = ?;
-        """
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
-        defer { sqlite3_finalize(stmt) }
-
-        let iso = ISO8601DateFormatter()
-        bindOptional(stmt, 1, text)
-        bind(stmt, 2, status.rawValue)
-        bindOptional(stmt, 3, observedAt.map(iso.string(from:)))
-        sqlite3_bind_int(stmt, 4, Int32(version))
-        bind(stmt, 5, revisionID)
-
-        if sqlite3_step(stmt) == SQLITE_DONE {
-            postDidChangeNotification()
-            return true
-        }
-        return false
-    }
-
     func shrinkMemory() {
         guard let db else { return }
         sqlite3_db_release_memory(db)

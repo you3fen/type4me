@@ -70,22 +70,10 @@ enum VolcProtocol: Sendable {
             "force_to_speech_time": 0,
         ]
 
-        var corpus: [String: Any] = [:]
-        if let boostingTableID = sanitized(options.boostingTableID) {
-            // Cloud boosting table: skip inline hotwords, use table ID only
-            corpus["boosting_table_id"] = boostingTableID
-        } else if let contextString = buildContextString(hotwords: options.hotwords) {
-            // No cloud table: fall back to inline hotwords. The documented
-            // field is `request.corpus.context`; a top-level `request.context`
-            // is not part of the bigmodel request schema.
-            corpus["context"] = contextString
-        }
-        if !corpus.isEmpty {
-            requestDict["corpus"] = corpus
-        }
-
-        if options.contextHistoryLength > 0 {
-            requestDict["context_history_length"] = options.contextHistoryLength
+        // Direct hotwords go in the documented `request.corpus.context` field;
+        // a top-level `request.context` is not part of the bigmodel schema.
+        if let contextString = buildContextString(hotwords: options.hotwords) {
+            requestDict["corpus"] = ["context": contextString]
         }
 
         let payload: [String: Any] = [
@@ -160,15 +148,6 @@ enum VolcProtocol: Sendable {
             return nil
         }
         return contextString
-    }
-
-    private static func sanitized(_ value: String?) -> String? {
-        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !trimmed.isEmpty
-        else {
-            return nil
-        }
-        return trimmed
     }
 
     // MARK: - Encode Full Binary Message

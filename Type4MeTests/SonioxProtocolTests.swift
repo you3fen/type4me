@@ -21,8 +21,7 @@ final class SonioxProtocolTests: XCTestCase {
         let message = try SonioxProtocol.buildStartMessage(
             config: config,
             options: ASRRequestOptions(
-                hotwords: [" Type4Me ", "soniox", ""],
-                boostingTableID: "ignored"
+                hotwords: [" Type4Me ", "soniox", ""]
             )
         )
         let payload = try XCTUnwrap(

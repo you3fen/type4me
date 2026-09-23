@@ -535,7 +535,7 @@ actor RecognitionSession {
             return []
         }
         if personalVocabularySnapshot == nil {
-            personalVocabularySnapshot = HotwordStorage.loadEffective()
+            personalVocabularySnapshot = HotwordStorage.load()
         }
         let words = personalVocabularySnapshot ?? []
         let references = correctionReferences(for: snapshot, text: text)
@@ -1227,13 +1227,11 @@ actor RecognitionSession {
         self.asrClient = client
 
         // Load hotwords
-        let hotwords = HotwordStorage.loadEffective()
-        let biasSettings = ASRBiasSettingsStorage.load()
-        DebugFileLogger.log("vocabulary ASR session=\(diagnosticSessionID) provider=\(provider.rawValue) version=\(Self.vocabularyFingerprint(hotwords)) count=\(hotwords.count) configuredCloudTable=\(!biasSettings.boostingTableID.isEmpty)")
+        let hotwords = HotwordStorage.load()
+        DebugFileLogger.log("vocabulary ASR session=\(diagnosticSessionID) provider=\(provider.rawValue) version=\(Self.vocabularyFingerprint(hotwords)) count=\(hotwords.count)")
         let requestOptions = ASRRequestOptions(
             enablePunc: true,
             hotwords: hotwords,
-            boostingTableID: biasSettings.boostingTableID,
             bypassProxy: ProxyBypassMode.current.bypassASR
         )
 
@@ -1319,11 +1317,7 @@ actor RecognitionSession {
         do {
             DebugFileLogger.log("ASR connecting provider=\(provider.rawValue)")
             try await client.connect(config: config, options: requestOptions)
-            NSLog(
-                "[Session] ASR connected OK (streaming, hotwords=%d, history=%d)",
-                hotwords.count,
-                requestOptions.contextHistoryLength
-            )
+            NSLog("[Session] ASR connected OK (streaming, hotwords=%d)", hotwords.count)
             DebugFileLogger.log("ASR connected OK provider=\(provider.rawValue)")
         } catch {
             // stopRecording() may intentionally disconnect the recognizer while
@@ -3335,7 +3329,7 @@ actor RecognitionSession {
     /// User hotwords plus confirmed correction spellings: the terms the user has
     /// explicitly said they write this way.
     private func phoneticVocabulary() -> [String] {
-        let hotwords = HotwordStorage.loadEffective()
+        let hotwords = HotwordStorage.load()
         let confirmed = (try? CorrectionReferenceStorage.load())?.map(\.correctedText) ?? []
         return hotwords + confirmed
     }
@@ -3818,7 +3812,7 @@ actor RecognitionSession {
         // Soniox: use async REST API instead of re-streaming
         if provider == .soniox, let sonioxConfig = config as? SonioxASRConfig {
             let bypass = ProxyBypassMode.current.bypassASR
-            let hotwords = HotwordStorage.loadEffective()
+            let hotwords = HotwordStorage.load()
             let apiKey = sonioxConfig.apiKey
             DebugFileLogger.log("batch fallback: using Soniox async API (\(audio.count) bytes)")
             let resultTask = Task.detached {

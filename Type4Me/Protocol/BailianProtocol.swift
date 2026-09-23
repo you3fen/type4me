@@ -53,7 +53,7 @@ enum BailianProtocol {
             "heartbeat": false,
         ]
 
-        if let vocabularyID = sanitized(options.boostingTableID) ?? sanitized(config.vocabularyId) {
+        if let vocabularyID = sanitized(config.vocabularyId) {
             parameters["vocabulary_id"] = vocabularyID
         }
 

@@ -22,9 +22,7 @@ final class DeepgramProtocolTests: XCTestCase {
             config: config,
             options: ASRRequestOptions(
                 enablePunc: true,
-                hotwords: ["Type4Me", "Deepgram"],
-                boostingTableID: "ignored",
-                contextHistoryLength: 8
+                hotwords: ["Type4Me", "Deepgram"]
             )
         )
         let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))

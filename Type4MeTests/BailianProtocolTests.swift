@@ -21,9 +21,7 @@ final class BailianProtocolTests: XCTestCase {
             config: config,
             options: ASRRequestOptions(
                 enablePunc: true,
-                hotwords: ["Type4Me"],
-                boostingTableID: "vocab-from-options",
-                contextHistoryLength: 8
+                hotwords: ["Type4Me"]
             ),
             taskID: "task-123"
         )
@@ -48,7 +46,7 @@ final class BailianProtocolTests: XCTestCase {
         XCTAssertEqual(parameters["max_sentence_silence"] as? Int, 800)
         XCTAssertEqual(parameters["multi_threshold_mode_enabled"] as? Bool, false)
         XCTAssertEqual(parameters["heartbeat"] as? Bool, false)
-        XCTAssertEqual(parameters["vocabulary_id"] as? String, "vocab-from-options")
+        XCTAssertEqual(parameters["vocabulary_id"] as? String, "vocab-from-config")
         XCTAssertEqual(parameters["language_hints"] as? [String], ["zh"])
     }
 

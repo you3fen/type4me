@@ -154,7 +154,7 @@ actor SenseVoiceWSClient: SpeechRecognizer {
               let text = json["text"] as? String, !text.isEmpty else { return nil }
         let sanitizedText = Qwen3HotwordLeakSanitizer.sanitize(
             text,
-            hotwords: HotwordStorage.loadEffective()
+            hotwords: HotwordStorage.load()
         )
         if sanitizedText != text {
             DebugFileLogger.log("Qwen3 transcribe: hotword leak sanitized \(text.count)->\(sanitizedText.count) chars")

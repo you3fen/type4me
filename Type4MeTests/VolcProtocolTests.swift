@@ -111,41 +111,20 @@ final class VolcProtocolTests: XCTestCase {
         XCTAssertNil(request?["context"])
     }
 
-    func testClientRequestJSON_usesHotwordsAndBoostingCorpusFields() throws {
-        // With a cloud boosting table ID, inline hotwords are omitted (table takes precedence).
+    func testClientRequestJSON_sendsInlineHotwordsInCorpusContext() throws {
         let payload = VolcProtocol.buildClientRequest(
             uid: "test-user-123",
             options: ASRRequestOptions(
                 enablePunc: true,
-                hotwords: ["Type4Me", "DeepSeek"],
-                boostingTableID: "boost-123",
-                contextHistoryLength: 6
-            )
-        )
-        let json = try JSONSerialization.jsonObject(with: payload) as? [String: Any]
-        let request = json?["request"] as? [String: Any]
-        XCTAssertEqual(request?["context_history_length"] as? Int, 6)
-        XCTAssertNil(request?["context"])
-
-        let corpus = try XCTUnwrap(request?["corpus"] as? [String: Any])
-        XCTAssertEqual(corpus["boosting_table_id"] as? String, "boost-123")
-    }
-
-    func testClientRequestJSON_usesInlineHotwordsWhenNoBoostingTable() throws {
-        let payload = VolcProtocol.buildClientRequest(
-            uid: "test-user-123",
-            options: ASRRequestOptions(
-                enablePunc: true,
-                hotwords: ["Type4Me", "DeepSeek"],
-                boostingTableID: nil,
-                contextHistoryLength: 6
+                hotwords: ["Type4Me", "DeepSeek"]
             )
         )
         let json = try JSONSerialization.jsonObject(with: payload) as? [String: Any]
         let request = try XCTUnwrap(json?["request"] as? [String: Any])
         XCTAssertNil(request["context"])
+        XCTAssertNil(request["context_history_length"])
         let corpus = try XCTUnwrap(request["corpus"] as? [String: Any])
-        XCTAssertNil(corpus["boosting_table_id"])
+        XCTAssertEqual(corpus.keys.sorted(), ["context"])
         let contextString = try XCTUnwrap(corpus["context"] as? String)
         let contextData = try XCTUnwrap(contextString.data(using: .utf8))
         let context = try JSONSerialization.jsonObject(with: contextData) as? [String: Any]

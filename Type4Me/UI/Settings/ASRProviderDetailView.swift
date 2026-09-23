@@ -927,11 +927,9 @@ struct ASRProviderDetailView: View, SettingsCardHelpers {
     }
 
     private func currentASRRequestOptions(enablePunc: Bool) -> ASRRequestOptions {
-        let biasSettings = ASRBiasSettingsStorage.load()
-        return ASRRequestOptions(
+        ASRRequestOptions(
             enablePunc: enablePunc,
             hotwords: HotwordStorage.load(),
-            boostingTableID: biasSettings.boostingTableID,
             bypassProxy: ProxyBypassMode.current.bypassASR
         )
     }

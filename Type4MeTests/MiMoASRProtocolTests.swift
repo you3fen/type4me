@@ -16,8 +16,7 @@ final class MiMoASRProtocolTests: XCTestCase {
             config: config,
             options: ASRRequestOptions(
                 enablePunc: true,
-                hotwords: ["Type4Me", "小米"],
-                boostingTableID: "test-table"
+                hotwords: ["Type4Me", "小米"]
             )
         )
 

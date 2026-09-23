@@ -189,9 +189,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Obsolete: speculative LLM was removed; older installs may still hold the override.
         UserDefaults.standard.removeObject(forKey: "tf_enableSpeculativeLLM")
 
-        // Sync hotwords to Volcengine cloud table (async, non-blocking)
-        VolcHotwordSyncManager.syncIfNeeded()
-
         // Deploy bundled models (local variant) before anything touches model paths
         ModelManager.deployBundledModelsIfNeeded()
 

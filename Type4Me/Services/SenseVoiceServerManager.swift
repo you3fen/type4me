@@ -22,7 +22,7 @@ actor SenseVoiceServerManager {
 
     /// Write effective hotwords (builtin + user) to hotwords.txt for Qwen3 server.
     nonisolated static func syncHotwordsFile() {
-        let words = HotwordStorage.loadEffective()
+        let words = HotwordStorage.load()
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = appSupport.appendingPathComponent(AppDataLocation.profileDirectoryName)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

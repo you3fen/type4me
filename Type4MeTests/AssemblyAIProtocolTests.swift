@@ -13,8 +13,7 @@ final class AssemblyAIProtocolTests: XCTestCase {
             config: config,
             options: ASRRequestOptions(
                 enablePunc: true,
-                hotwords: [" Type4Me ", String(repeating: "a", count: 70), "keep-me"],
-                boostingTableID: "ignored"
+                hotwords: [" Type4Me ", String(repeating: "a", count: 70), "keep-me"]
             )
         )
         let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))

@@ -1,20 +1,14 @@
 import Foundation
 import Type4MeIntelliSenseCore
 import os
-#if canImport(AppKit)
-import AppKit
-#endif
 
-/// Snippet replacement with two independent stores:
-/// - **Built-in file** (`builtin-snippets.json`): seeded from defaults, user-editable via Finder for bulk ops
-/// - **User file** (`snippets.json`): managed by Settings UI, auto-loaded on save
-/// Both are merged at runtime; user entries override built-in on trigger conflict.
+/// Exact trigger → replacement rules: global (`snippets.json`) plus optional
+/// per-app overrides (`app-snippets/`). App rules win on trigger conflict.
 enum SnippetStorage {
 
     // MARK: - In-memory caches
 
     private static let fileCacheLock = NSLock()
-    private static var cachedBuiltin: [(trigger: String, value: String)]?  // guarded by fileCacheLock
     private static var cachedUser: [(trigger: String, value: String)]?     // guarded by fileCacheLock
 
     // MARK: - File paths
@@ -23,9 +17,6 @@ enum SnippetStorage {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return dir.appendingPathComponent(AppDataLocation.profileDirectoryName)
     }
-
-    /// Built-in snippets file (seeded from defaults, user-editable for bulk ops)
-    static var builtinFileURL: URL { appSupportDir.appendingPathComponent("builtin-snippets.json") }
 
     /// User snippets file (managed by Settings UI)
     static var userFileURL: URL { appSupportDir.appendingPathComponent("snippets.json") }
@@ -36,173 +27,6 @@ enum SnippetStorage {
         let trigger: String
         let replacement: String
     }
-
-    // MARK: - Default snippets (used for initial seeding)
-
-    /// Default ASR correction mappings. Seeded into builtin-snippets.json on first launch.
-    /// Triggers are matched case-insensitively and space-insensitively via `buildFlexPattern`.
-    ///
-    /// Verified against: Volcengine Seed ASR 2.0, Qwen3-ASR 0.6B/1.7B, SenseVoice-Small.
-    static let defaultSnippets: [(trigger: String, value: String)] = [
-
-        // ── vibe coding (ASR 几乎必错) ──
-        ("web coding",      "vibe coding"),
-        ("webb coding",     "vibe coding"),
-        ("vab coding",      "vibe coding"),
-        ("vabe coding",     "vibe coding"),
-        ("vibes coding",    "vibe coding"),
-        ("Vipcoding",       "vibe coding"),
-        ("vipe coding",     "vibe coding"),
-        ("vb coding",       "vibe coding"),
-        ("vib coding",      "vibe coding"),
-        ("va coding",       "vibe coding"),
-        ("vivcoding",       "vibe coding"),
-        ("wife coding",     "vibe coding"),
-
-        // ── Claude ──
-        ("Cloud Code",      "Claude Code"),
-        ("clod",            "Claude"),
-        ("clawed",          "Claude"),
-        ("claud",           "Claude"),
-
-        // ── Anthropic ──
-        ("Asthropic",       "Anthropic"),
-        ("Anthropropic",    "Anthropic"),
-        ("Anthropick",      "Anthropic"),
-        ("Anthrobic",       "Anthropic"),
-        ("and tropic",      "Anthropic"),
-        ("an tropic",       "Anthropic"),
-        ("anthrophic",      "Anthropic"),
-
-        // ── ChatGPT ──
-        ("chat GPT",        "ChatGPT"),
-
-        // ── DeepSeek ──
-        ("deepse",          "DeepSeek"),
-        ("deep sick",       "DeepSeek"),
-        ("deep seek",       "DeepSeek"),
-        ("deep sec",        "DeepSeek"),
-
-        // ── Gemini ──
-        ("jiminy",          "Gemini"),
-        ("gem any",         "Gemini"),
-
-        // ── Qwen ──
-        ("Queen三",         "Qwen3"),
-        ("Queen 三",        "Qwen3"),
-        ("Queen3",          "Qwen3"),
-        ("Queen 3",         "Qwen3"),
-        ("qun三",           "Qwen3"),
-        ("Qu3",             "Qwen3"),
-        ("Queen三点五",     "Qwen3.5"),
-        ("Queen 3.5",       "Qwen3.5"),
-        ("quin三点五",      "Qwen3.5"),
-        ("qun三点五",       "Qwen3.5"),
-        ("quin三点",        "Qwen3"),
-
-        // ── Grok ──
-        ("grock",           "Grok"),
-
-        // ── Llama / Ollama ──
-        ("ELMA",            "Llama"),
-        ("OELMA",           "Ollama"),
-
-        // ── Midjourney / Copilot / Perplexity ──
-        ("mid journey",     "Midjourney"),
-        ("co pilot",        "Copilot"),
-        ("perplex city",    "Perplexity"),
-
-        // ── Hugging Face ──
-        ("hugging phase",   "Hugging Face"),
-        ("hug and face",    "Hugging Face"),
-
-        // ── Codex ──
-        ("codecs",          "Codex"),
-        ("CodeX",           "Codex"),
-        ("Codec",           "Codex"),
-
-        // ── JSON ──
-        ("Jason",           "JSON"),
-
-        // ── fine-tuning ──
-        ("finight tuning",  "fine-tuning"),
-        ("find tuning",     "fine-tuning"),
-        ("fine tuning",     "fine-tuning"),
-        ("fine tune",       "fine-tune"),
-
-        // ── LoRA / QLoRA ──
-        ("lore a",          "LoRA"),
-        ("lor a",           "LoRA"),
-        ("Q lore a",        "QLoRA"),
-
-        // ── agentic ──
-        ("a genetic",       "agentic"),
-        ("a gentic",        "agentic"),
-
-        // ── multimodal / multi-agent ──
-        ("multi modal",     "multimodal"),
-        ("multi agent",     "multi-agent"),
-        ("multiag",         "multi-agent"),
-
-        // ── few-shot / zero-shot / in-context learning ──
-        ("few shot",        "few-shot"),
-        ("zero shot",       "zero-shot"),
-        ("in context learning", "in-context learning"),
-
-        // ── embedding / context window ──
-        ("imbedding",       "embedding"),
-        ("contexwin",       "context window"),
-        ("context win",     "context window"),
-
-        // ── LangChain / LlamaIndex ──
-        ("long chain",      "LangChain"),
-        ("long train",      "LangChain"),
-        ("llama index",     "LlamaIndex"),
-        ("lama index",      "LlamaIndex"),
-
-        // ── AI frameworks (CrewAI, AutoGen, ComfyUI, ControlNet) ──
-        ("crew AI",         "CrewAI"),
-        ("auto gen",        "AutoGen"),
-        ("auto Jen",        "AutoGen"),
-        ("comfy UI",        "ComfyUI"),
-        ("control net",     "ControlNet"),
-
-        // ── AI coding tools ──
-        ("wind surf",       "Windsurf"),
-        ("Klein",           "Cline"),
-        ("C line",          "Cline"),
-        ("aid her",         "Aider"),
-        ("open router",     "OpenRouter"),
-        ("light LLM",       "LiteLLM"),
-        ("lite LLM",        "LiteLLM"),
-        ("VLLM",            "vLLM"),
-        ("llama CPP",       "llama.cpp"),
-        ("curser",          "Cursor"),
-        ("克色",            "Cursor"),
-
-        // ── Dev tools ──
-        ("get hub",         "GitHub"),
-        ("git hub",         "GitHub"),
-        ("VS code",         "VS Code"),
-        ("Kubanetes",       "Kubernetes"),
-        ("Kubenetes",       "Kubernetes"),
-        ("Nextjs",          "Next.js"),
-        ("type script",     "TypeScript"),
-        ("typepescript",    "TypeScript"),
-        ("graph QL",        "GraphQL"),
-        ("web socket",      "WebSocket"),
-        ("pinecom",         "Pinecone"),
-
-        // ── Infra & formats ──
-        ("DM g",            "DMG"),
-        ("verse cell",      "Vercel"),
-        ("verse L",         "Vercel"),
-        ("super base",      "Supabase"),
-        ("cloud flare",     "Cloudflare"),
-        ("cloud flair",     "Cloudflare"),
-        ("N video",         "NVIDIA"),
-        ("onyx",            "ONNX"),
-    ]
 
     // MARK: - Initialization
 
@@ -253,36 +77,6 @@ enum SnippetStorage {
         try writeFileOrThrow(snippets, to: userFileURL)
         invalidateCache()
         NotificationCenter.default.post(name: didChangeNotification, object: nil)
-    }
-
-    // MARK: - Built-in file (Finder editable)
-
-    static func loadBuiltin() -> [(trigger: String, value: String)] {
-        fileCacheLock.lock()
-        defer { fileCacheLock.unlock() }
-        if let cached = cachedBuiltin { return cached }
-        let result = readFile(builtinFileURL)
-        cachedBuiltin = result
-        return result
-    }
-
-    static func saveBuiltin(_ snippets: [(trigger: String, value: String)]) {
-        writeFile(snippets, to: builtinFileURL)
-        invalidateCache()
-    }
-
-    static func builtinCount() -> Int {
-        return loadBuiltin().count
-    }
-
-    /// Reveal built-in snippets file in Finder.
-    static func revealBuiltinInFinder() {
-        if !FileManager.default.fileExists(atPath: builtinFileURL.path) {
-            saveBuiltin(defaultSnippets)
-        }
-        #if canImport(AppKit)
-        NSWorkspace.shared.activateFileViewerSelecting([builtinFileURL])
-        #endif
     }
 
     // MARK: - App-specific snippets
@@ -376,7 +170,6 @@ enum SnippetStorage {
         cacheLock.withLock { $0 = nil }
         appCacheLock.withLock { $0.removeAll() }
         fileCacheLock.lock()
-        cachedBuiltin = nil
         cachedUser = nil
         fileCacheLock.unlock()
     }
@@ -397,18 +190,8 @@ enum SnippetStorage {
 
     // MARK: - Apply (merge both stores)
 
-    /// Apply built-in + user snippets. User entries override built-in on trigger conflict.
-    static func applyEffective(to text: String, onMatch: ((String, Int, Int) -> Void)? = nil) -> String {
-        applyEffectiveTracking(to: text, bundleId: nil, onMatch: onMatch).text
-    }
-
-    /// Apply global + app-specific snippets. App rules win on trigger conflict.
-    static func applyEffective(to text: String, bundleId: String?, onMatch: ((String, Int, Int) -> Void)? = nil) -> String {
-        applyEffectiveTracking(to: text, bundleId: bundleId, onMatch: onMatch).text
-    }
-
-    /// The same replacement pass as `applyEffective(to:bundleId:)`, also reporting
-    /// which rules actually rewrote the text and which scope each came from.
+    /// Applies global + app-specific snippets, reporting which rules actually
+    /// rewrote the text and which scope each came from.
     ///
     /// The output and the report come from one pass on purpose. Asking later which
     /// rules "would" match re-runs whatever rules exist by then, and describes rules
