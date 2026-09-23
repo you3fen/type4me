@@ -94,18 +94,24 @@ struct QuickCorrectionSheet: View {
                         Text("\(rule.trigger) → \(rule.value)")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(TF.settingsText)
-                        Text(scopeLabel(for: rule))
-                            .font(.system(size: 10))
-                            .foregroundStyle(TF.settingsTextTertiary)
-                        if ruleStillExists(rule) {
-                            Button(L("查看规则", "Open rule")) { openRule(rule) }
-                                .buttonStyle(.plain)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(TF.settingsAccentBlue)
-                        } else {
-                            Text(L("规则已修改或删除", "Rule since changed or removed"))
+                        if rule.origin == .phoneticVocabulary {
+                            Text(L("拼音容错 · 热词", "Accent-tolerant · hotword"))
                                 .font(.system(size: 10))
                                 .foregroundStyle(TF.settingsTextTertiary)
+                        } else {
+                            Text(scopeLabel(for: rule))
+                                .font(.system(size: 10))
+                                .foregroundStyle(TF.settingsTextTertiary)
+                            if ruleStillExists(rule) {
+                                Button(L("查看规则", "Open rule")) { openRule(rule) }
+                                    .buttonStyle(.plain)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(TF.settingsAccentBlue)
+                            } else {
+                                Text(L("规则已修改或删除", "Rule since changed or removed"))
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(TF.settingsTextTertiary)
+                            }
                         }
                     }
                 }

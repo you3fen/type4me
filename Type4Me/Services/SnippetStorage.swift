@@ -526,6 +526,14 @@ struct AppliedSnippetRule: Codable, Equatable, Hashable, Sendable {
     let value: String
     /// `nil` for a global rule; the app's bundle identifier for an app rule.
     let bundleId: String?
+    /// `nil` for a stored snippet rule. Set when the rewrite came from another
+    /// deterministic pass, so history does not look for a snippet that never existed.
+    var origin: Origin? = nil
+
+    enum Origin: String, Codable, Sendable {
+        /// Accent-tolerant pinyin match against the user's vocabulary.
+        case phoneticVocabulary
+    }
 }
 
 /// Replacement output together with the rules that produced it.

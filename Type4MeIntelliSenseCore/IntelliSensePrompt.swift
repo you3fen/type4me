@@ -97,6 +97,7 @@ public struct ScenePolicy: Equatable, Codable, Sendable {
 public enum IntelliSensePromptBuilder {
     private static let maximumPersonalVocabularyTerms = 20
     private static let maximumPersonalVocabularyCharacters = 400
+    private static let maximumPhoneticHints = 8
 
     public static let baseTemplate = #"""
     # 角色与唯一任务
@@ -211,13 +212,33 @@ public enum IntelliSensePromptBuilder {
             additions.append(contextInstructions(input.context))
         }
 
+        let phoneticHints = allowsEnhancedAwareness
+            ? text.map { PhoneticVocabularyMatcher.matches(in: $0, vocabulary: input.personalVocabulary) } ?? []
+            : []
+
         if allowsEnhancedAwareness,
            let vocabulary = personalVocabularyInstructions(input.personalVocabulary, text: text,
-                preferredSpellings: text.map { value in
+                preferredSpellings: (text.map { value in
                     VocabularyCorrectionPolicy.select(input.correctionReferences, input: value, context: input.context)
                         .map(\.correctedText)
-                } ?? []) {
+                } ?? []) + phoneticHints.map(\.term)) {
             additions.append(vocabulary)
+        }
+
+        if !phoneticHints.isEmpty {
+            var seen = Set<String>()
+            let data = phoneticHints
+                .filter { seen.insert($0.window + "\u{1F}" + $0.term).inserted }
+                .prefix(maximumPhoneticHints)
+                .map { "- \(escapeData($0.window)) → \(escapeData($0.term))" }
+                .joined(separator: "\n")
+            additions.append("""
+            # 近音误识别提示
+            说话人前后鼻音、平翘舌、n/l 容易混淆。以下是按拼音推算出的可能误识别位置，只是提示，不是替换规则。仅当本次上下文支持时，才把左侧写法改为右侧词汇；左侧本身是合理用词时（例如“会花多少钱”“才行吗”）必须保留原样。
+            <possible_misrecognitions>
+            \(data)
+            </possible_misrecognitions>
+            """)
         }
 
         if allowsEnhancedAwareness, let text {
