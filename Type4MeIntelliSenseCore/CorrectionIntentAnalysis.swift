@@ -57,6 +57,16 @@ public struct CorrectionIntentAnalysis: Equatable, Codable, Sendable {
                 if prefix.hasSuffix("不要") || prefix.hasSuffix("不能") || prefix.hasSuffix("别") {
                     return nil
                 }
+                // "把 325 改成 3.25" is an instruction about both values, not the
+                // speaker retracting 325: a 把/将 clause keeps 改成/换成 literal.
+                let marker = text[range]
+                if marker.hasPrefix("改成") || marker.hasPrefix("换成") {
+                    let clauseStart = text[..<range.lowerBound]
+                        .lastIndex(where: { "。！？!?，,；;\n".contains($0) })
+                        .map { text.index(after: $0) } ?? text.startIndex
+                    let clause = text[clauseStart..<range.lowerBound]
+                    if clause.contains("把") || clause.contains("将") { return nil }
+                }
                 return range
             }
         }.sorted { $0.lowerBound < $1.lowerBound }

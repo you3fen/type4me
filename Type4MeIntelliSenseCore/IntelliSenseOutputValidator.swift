@@ -158,8 +158,10 @@ public enum IntelliSenseOutputValidator {
         return warnings.isEmpty ? .accept : .acceptWithWarnings(warnings)
     }
 
+    /// A protected token must survive as itself: "99" inside "199" does not count.
     private static func contains(token: String, in text: String) -> Bool {
-        text.range(of: token, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+        let pattern = "(?<![A-Za-z0-9])" + NSRegularExpression.escapedPattern(for: token) + "(?![A-Za-z0-9])"
+        return text.range(of: pattern, options: [.regularExpression, .caseInsensitive, .diacriticInsensitive]) != nil
     }
 
     private static func compatibleNegationRelations(

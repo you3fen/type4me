@@ -532,6 +532,20 @@ final class IntelliSenseOutputGuardTests: XCTestCase {
         XCTAssertTrue(warnings.contains(.expectedListStructureMissing))
         XCTAssertEqual(result.finalText, output)
     }
+
+    func testBaInstructionKeepsBothValuesButRealRetractionMayDropTheOldOne() {
+        // Real dictation: "把325改成3.25" came back as "把 3.25 改成 3.25".
+        let instruction = IntelliSenseOutputValidator.evaluate(input: "把325改成3.25。", output: "把 3.25 改成 3.25。")
+        XCTAssertEqual(instruction, .reject(.protectedTokenChanged))
+        XCTAssertEqual(IntelliSenseOutputValidator.evaluate(input: "将价格 99 换成 199。", output: "将价格 199 换成 199。"),
+                       .reject(.protectedTokenChanged))
+        let kept = IntelliSenseOutputValidator.evaluate(input: "把325改成3.25。", output: "把 325 改成 3.25。")
+        if case .reject = kept { XCTFail("an unchanged instruction must pass") }
+        let retraction = IntelliSenseOutputValidator.evaluate(
+            input: "我们明天下午3点开会，不对，改成4点。", output: "我们明天下午 4 点开会。"
+        )
+        if case .reject = retraction { XCTFail("a real spoken retraction may drop the old time") }
+    }
 }
 
 final class ListStructureIntentAnalyzerTests: XCTestCase {
