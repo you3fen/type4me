@@ -34,13 +34,31 @@ final class VocabularyEditLearnerTests: XCTestCase {
         XCTAssertNil(correction("那个西瓜", "那个子 Agent"), "mixed Chinese/Latin term")
     }
 
+    func testWrittenFormsBecomeReplacementRulesAfterTheSameWrongFormTwice() {
+        // Real edits: the ASR writes "A 处" for the spoken nickname "A\".
+        XCTAssertEqual(correction("后面我再使用一下 A 处的产品吧。", "后面我再使用一下 A\\的产品吧。"),
+                       .init(wrong: "A 处", term: "A\\", kind: .replacement))
+        XCTAssertEqual(correction("识别一个 A 处有这么难吗？", "识别一个A\\有这么难吗？"),
+                       .init(wrong: "A 处", term: "A\\", kind: .replacement))
+        XCTAssertNil(correction("这个 A 处它", "这个 A畜它"), "single Chinese character")
+        XCTAssertNil(correction("主要是 A 处，现在", "主要是 A \\，现在"), "symbol with no letter")
+
+        var state = VocabularyEditLearner.State()
+        let rule = VocabularyEditLearner.Correction(wrong: "A 处", term: "A\\", kind: .replacement)
+        XCTAssertNil(VocabularyEditLearner.record(rule, in: &state, knownVocabulary: []))
+        XCTAssertEqual(VocabularyEditLearner.record(rule, in: &state, knownVocabulary: []),
+                       .replacement(trigger: "A 处", value: "A\\"))
+        XCTAssertNil(VocabularyEditLearner.record(rule, in: &state, knownVocabulary: [], knownTriggers: ["A处"]),
+                     "an existing rule for the same trigger is left alone")
+    }
+
     func testPromotesOnlyAfterTheSecondCorrection() {
         var state = VocabularyEditLearner.State()
         let first = VocabularyEditLearner.record(.init(wrong: "Recast", term: "Raycast"), in: &state, knownVocabulary: [])
         XCTAssertNil(first)
         XCTAssertEqual(state.terms["raycast"]?.count, 1)
         let second = VocabularyEditLearner.record(.init(wrong: "Redis", term: "Raycast"), in: &state, knownVocabulary: [])
-        XCTAssertEqual(second, "Raycast")
+        XCTAssertEqual(second, .hotword("Raycast"))
         XCTAssertNil(state.terms["raycast"], "promoted terms leave the tracked state")
     }
 
@@ -49,6 +67,8 @@ final class VocabularyEditLearnerTests: XCTestCase {
         XCTAssertNil(VocabularyEditLearner.record(.init(wrong: "异议", term: "isssue"), in: &state, knownVocabulary: []))
         XCTAssertNil(VocabularyEditLearner.record(.init(wrong: "Qdex", term: "codex"), in: &state, knownVocabulary: ["Codex"]))
         XCTAssertNil(VocabularyEditLearner.record(.init(wrong: "Cortex", term: "Codex"), in: &state, knownVocabulary: ["Codex"]))
+        XCTAssertNil(VocabularyEditLearner.record(.init(wrong: "可乐的扣子", term: "claudecode"), in: &state,
+                                                  knownVocabulary: ["Claude code"]), "space/case variant of a hotword")
         XCTAssertEqual(state.terms.count, 1)
         XCTAssertEqual(state.terms.values.first?.term, "isssue")
     }
@@ -61,14 +81,16 @@ final class VocabularyEditLearnerTests: XCTestCase {
         let store = VocabularyLearningStore(
             fileURL: directory.appendingPathComponent("vocabulary-learning.json"),
             loadVocabulary: { ["Codex"] },
-            addHotword: { await added.append($0) }
+            loadTriggers: { [] },
+            addHotword: { await added.append($0) },
+            addReplacement: { await added.append("\($0)→\($1)") }
         )
         let none = await store.record(original: "用 Recast 打开", edited: "用 Raycast 打开")
         XCTAssertNil(none)
         let tracked = await store.trackedState()
         XCTAssertEqual(tracked.terms["raycast"]?.wrongForms, ["Recast"])
         let promoted = await store.record(original: "Recast 很好用", edited: "Raycast 很好用")
-        XCTAssertEqual(promoted, "Raycast")
+        XCTAssertEqual(promoted, .hotword("Raycast"))
         let terms = await added.terms
         XCTAssertEqual(terms, ["Raycast"])
         let after = await store.trackedState()

@@ -10,9 +10,23 @@ public enum VocabularyEditLearner {
     public static let promotionThreshold = 2
     public static let maximumTrackedTerms = 200
 
+    public enum Kind: String, Codable, Sendable {
+        /// A spoken term the ASR can be biased toward (Raycast, 生财有术).
+        case hotword
+        /// A written form nobody pronounces as spelled (A\): hotwords cannot
+        /// help, so the repeated wrong form becomes a replacement rule.
+        case replacement
+    }
+
     public struct Correction: Equatable, Sendable {
         public let wrong: String
         public let term: String
+        public var kind: Kind = .hotword
+    }
+
+    public enum Promotion: Equatable, Sendable {
+        case hotword(String)
+        case replacement(trigger: String, value: String)
     }
 
     /// The single corrected term in `edited`, or nil when the edit is not one
@@ -25,15 +39,31 @@ public enum VocabularyEditLearner {
         var suffix = 0
         while suffix < old.count - prefix, suffix < new.count - prefix,
               old[old.count - 1 - suffix] == new[new.count - 1 - suffix] { suffix += 1 }
-        let wrong = trimmed(old[prefix..<(old.count - suffix)].joined())
-        let term = trimmed(new[prefix..<(new.count - suffix)].joined())
-        guard !wrong.isEmpty, wrong.count <= 12, isLearnable(term),
-              wrong.lowercased() != term.lowercased()
+        var lower = prefix, oldUpper = old.count - suffix, newUpper = new.count - suffix
+        // A symbol-only change such as "A 处" → "A\" belongs to the adjacent
+        // Latin token; widen both sides over it so the whole written form is kept.
+        if !new[lower..<newUpper].joined().contains(where: isWordCharacter) {
+            if lower > 0, isLatinRun(new[lower - 1]) { lower -= 1 }
+            if newUpper < new.count, isLatinRun(new[newUpper]) { newUpper += 1; oldUpper += 1 }
+        }
+        let rawWrong = old[lower..<oldUpper].joined(), rawTerm = new[lower..<newUpper].joined()
+
+        let wrong = trimmed(rawWrong), term = trimmed(rawTerm)
+        if !wrong.isEmpty, wrong.count <= 12, isLearnable(term),
+           wrong.lowercased() != term.lowercased(),
+           // A misheard Chinese term is replaced by one of the same length
+           // (身材有数 → 生财有术); a longer or shorter rewrite is wording.
+           !(wrong.allSatisfy(isHan) && term.allSatisfy(isHan) && wrong.count != term.count) {
+            return Correction(wrong: wrong, term: term)
+        }
+
+        let ruleWrong = rawWrong.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ruleTerm = rawTerm.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isWrittenForm(ruleTerm), (2...12).contains(ruleWrong.count),
+              ruleWrong.contains(where: isWordCharacter), !ruleWrong.contains(where: \.isNewline),
+              !ruleWrong.contains(where: isSymbol)
         else { return nil }
-        // A misheard Chinese term is replaced by one of the same length
-        // (身材有数 → 生财有术); a longer or shorter rewrite is wording.
-        if wrong.allSatisfy(isHan), term.allSatisfy(isHan), wrong.count != term.count { return nil }
-        return Correction(wrong: wrong, term: term)
+        return Correction(wrong: ruleWrong, term: ruleTerm, kind: .replacement)
     }
 
     /// Chinese terms of 2–8 characters, or a Latin-led term of 3–30 characters
@@ -49,11 +79,18 @@ public enum VocabularyEditLearner {
         }
     }
 
+    /// A short written form with a letter and a symbol, e.g. "A\" or "C++".
+    static func isWrittenForm(_ term: String) -> Bool {
+        (2...12).contains(term.count) && !term.contains(where: \.isNewline)
+            && term.contains(where: isWordCharacter) && term.contains(where: isSymbol)
+    }
+
     public struct TrackedTerm: Codable, Equatable, Sendable {
         public var term: String
         public var count: Int
         public var wrongForms: [String]
         public var lastSeen: Date
+        public var kind: Kind? = nil
     }
 
     public struct State: Codable, Equatable, Sendable {
@@ -62,16 +99,29 @@ public enum VocabularyEditLearner {
         public init() {}
     }
 
-    /// Records one correction. Returns the term to promote when it reaches the
-    /// threshold; the promoted term is removed from the tracked state.
+    /// Records one correction and returns what to add once it reaches the
+    /// threshold; a promoted entry leaves the tracked state. Hotwords count
+    /// the corrected term; replacement rules count the exact wrong form.
     public static func record(
-        _ correction: Correction, in state: inout State, knownVocabulary: [String], now: Date = Date()
-    ) -> String? {
-        let key = VocabularyTermIdentity.spellingKey(correction.term)
-        guard !key.isEmpty,
-              !knownVocabulary.contains(where: { VocabularyTermIdentity.spellingKey($0) == key })
-        else { return nil }
-        var tracked = state.terms[key] ?? TrackedTerm(term: correction.term, count: 0, wrongForms: [], lastSeen: now)
+        _ correction: Correction, in state: inout State, knownVocabulary: [String],
+        knownTriggers: [String] = [], now: Date = Date()
+    ) -> Promotion? {
+        let key: String
+        switch correction.kind {
+        case .hotword:
+            key = VocabularyTermIdentity.triggerKey(correction.term)
+            guard !key.isEmpty,
+                  !knownVocabulary.contains(where: { VocabularyTermIdentity.triggerKey($0) == key })
+            else { return nil }
+        case .replacement:
+            let trigger = VocabularyTermIdentity.triggerKey(correction.wrong)
+            guard !trigger.isEmpty,
+                  !knownTriggers.contains(where: { VocabularyTermIdentity.triggerKey($0) == trigger })
+            else { return nil }
+            key = "rule:" + trigger + "\u{1F}" + correction.term
+        }
+        var tracked = state.terms[key]
+            ?? TrackedTerm(term: correction.term, count: 0, wrongForms: [], lastSeen: now, kind: correction.kind)
         tracked.term = correction.term
         tracked.count += 1
         tracked.lastSeen = now
@@ -80,7 +130,10 @@ public enum VocabularyEditLearner {
         }
         guard tracked.count < promotionThreshold else {
             state.terms[key] = nil
-            return tracked.term
+            switch correction.kind {
+            case .hotword: return .hotword(tracked.term)
+            case .replacement: return .replacement(trigger: correction.wrong, value: tracked.term)
+            }
         }
         state.terms[key] = tracked
         if state.terms.count > maximumTrackedTerms,
@@ -111,6 +164,18 @@ public enum VocabularyEditLearner {
 
     private static func trimmed(_ text: String) -> String {
         text.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters).union(.symbols))
+    }
+
+    private static func isLatinRun(_ token: String) -> Bool {
+        token.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
+    }
+
+    private static func isWordCharacter(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber
+    }
+
+    private static func isSymbol(_ character: Character) -> Bool {
+        !character.isLetter && !character.isNumber && !character.isWhitespace
     }
 
     private static func isHan(_ character: Character) -> Bool {
