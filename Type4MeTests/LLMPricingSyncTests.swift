@@ -229,4 +229,9 @@ final class LLMPricingSyncTests: XCTestCase {
             XCTAssertTrue(error is LLMPricingSyncError || error is DecodingError)
         }
     }
+    func testCacheUsesProfileDirectory() {
+        let cacheURL = LLMPricingSyncService.defaultCacheFileURL
+        XCTAssertEqual(cacheURL.lastPathComponent, "llm-pricing-cache.json")
+        XCTAssertEqual(cacheURL.deletingLastPathComponent().lastPathComponent, AppDataLocation.profileDirectoryName)
+    }
 }

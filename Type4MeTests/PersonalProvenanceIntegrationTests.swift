@@ -138,16 +138,11 @@ final class PersonalProvenanceIntegrationTests: XCTestCase {
     }
 
     func testBackupLocationsFollowActiveBuildNamespace() {
-        XCTAssertEqual(DataBackupManager.dataDirectory.lastPathComponent, AppDataNamespace.directoryName)
-        XCTAssertEqual(DataBackupManager.backupRoot.lastPathComponent, AppDataNamespace.directoryName + " Backups")
+        XCTAssertEqual(DataBackupManager.dataDirectory.lastPathComponent, AppDataLocation.profileDirectoryName)
+        XCTAssertEqual(DataBackupManager.backupRoot.lastPathComponent, AppDataLocation.profileDirectoryName + " Backups")
         XCTAssertEqual(DataBackupManager.dataDirectory.deletingLastPathComponent(), DataBackupManager.backupRoot.deletingLastPathComponent())
-        #if TYPE4ME_PERSONAL_BUILD && !TYPE4ME_DEV_BUILD
-        XCTAssertEqual(DataBackupManager.dataDirectory.lastPathComponent, "Type4Me Personal")
-        XCTAssertEqual(DataBackupManager.backupRoot.lastPathComponent, "Type4Me Personal Backups")
-        #else
-        XCTAssertEqual(DataBackupManager.dataDirectory.lastPathComponent, "Type4Me")
-        XCTAssertEqual(DataBackupManager.backupRoot.lastPathComponent, "Type4Me Backups")
-        #endif
+        XCTAssertEqual(DataBackupManager.dataDirectory.lastPathComponent, "Type4MeTests")
+        XCTAssertEqual(DataBackupManager.backupRoot.lastPathComponent, "Type4MeTests Backups")
     }
 
     func testBackupPreservesReferencesAndNeverIncludesSiblingProfile() throws {

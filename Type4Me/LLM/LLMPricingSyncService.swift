@@ -2,7 +2,7 @@ import Foundation
 
 /// Syncs LLM pricing tables from OpenRouter's public Models API.
 ///
-/// - Cache file: `~/Library/Application Support/Type4Me/llm-pricing-cache.json`
+/// - Cache file: `llm-pricing-cache.json` in this build's profile directory
 /// - Cooldown: 7 days between automatic fetches (`tf_lastPricingSync`)
 /// - Failures keep the current snapshot (seed catalog on first run) and leave
 ///   the cooldown untouched so the next launch retries.
@@ -27,12 +27,19 @@ final class LLMPricingSyncService {
     private(set) var lastSyncError: String?
     private(set) var entryCount = 0
 
-    private init() {
-        let directory = FileManager.default.urls(
+    /// Kept with the profile: production and Dev share prices, while personal-only
+    /// previews and tests retain their own isolated cache.
+    nonisolated static var defaultCacheFileURL: URL {
+        FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
-        ).first!.appendingPathComponent(AppDataNamespace.directoryName, isDirectory: true)
-        self.cacheFileURL = directory.appendingPathComponent("llm-pricing-cache.json")
+        ).first!
+            .appendingPathComponent(AppDataLocation.profileDirectoryName, isDirectory: true)
+            .appendingPathComponent("llm-pricing-cache.json")
+    }
+
+    private init() {
+        self.cacheFileURL = Self.defaultCacheFileURL
     }
 
     // MARK: - Lifecycle
@@ -105,23 +112,21 @@ final class LLMPricingSyncService {
                 entries: entries
             )
 
+            try Self.persist(snapshot, to: cacheFileURL)
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastSyncKey)
+
             LLMPricingRegistry.applyRemoteSnapshot(snapshot)
             lastSyncDate = snapshot.fetchedAt
             entryCount = entries.count
             lastSyncError = nil
 
-            // Views (analytics dashboard) read `rate(...)` synchronously; notify
-            // them so rows rendered before this sync don't show stale unknowns.
-            NotificationCenter.default.post(name: .llmPricingTableDidChange, object: nil)
-
-
-            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastSyncKey)
-
-            try Self.persist(snapshot, to: cacheFileURL)
-
             // Backfill historical rows whose cost was recorded as 0 because the
-            // rate was unknown at write time. Non-zero rows stay frozen.
-            Task { await HistoryStore.shared.recalculateZeroCostRecordsIfNeeded() }
+            // rate was unknown at write time, then notify the dashboard to refresh.
+            await HistoryStore.shared.recalculateZeroCostRecordsIfNeeded()
+
+            // Notify after in-memory registry is active and historical 0-cost
+            // records have finished recalculating.
+            NotificationCenter.default.post(name: .llmPricingTableDidChange, object: nil)
         } catch {
             lastSyncError = error.localizedDescription
             NSLog("[LLMPricingSync] fetch failed: \(error)")

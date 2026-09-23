@@ -37,6 +37,19 @@ enum StartSoundStyle: String, CaseIterable, Sendable {
 /// AVAudioPlayerNode's real-time render callback path.
 enum SoundFeedback {
 
+    // XCTest drives real session stop/error paths with synthetic recognizers.
+    // Keep those tests from opening audio devices or falling back to NSBeep.
+    #if DEBUG
+    private static let suppressTestAudio: Bool = {
+        let process = ProcessInfo.processInfo
+        let name = process.processName.lowercased()
+        return process.environment["XCTestConfigurationFilePath"] != nil
+            || name == "xctest"
+            || name.hasSuffix("packagetests")
+            || CommandLine.arguments.first?.contains(".xctest") == true
+    }()
+    #endif
+
     private struct ToneSpec {
         let tones: [(frequency: Double, duration: Double)]
         let volume: Float
@@ -74,6 +87,9 @@ enum SoundFeedback {
     // MARK: - Public API
 
     static func warmUp() {
+        #if DEBUG
+        guard !suppressTestAudio else { return }
+        #endif
         soundQueue.async {
             guard !hasWarmedUp else { return }
             hasWarmedUp = true
@@ -173,6 +189,9 @@ enum SoundFeedback {
     /// The primer is a short silent WAV played via AVAudioPlayer. By the time
     /// it finishes, the BT output path is warm and the next sound plays instantly.
     static func playBTPrimer(durationMs: Int) {
+        #if DEBUG
+        guard !suppressTestAudio else { return }
+        #endif
         soundQueue.async {
             let frames = Int(sampleRate * Double(durationMs) / 1000.0)
             guard let buffer = AVAudioPCMBuffer(pcmFormat: engineFormat, frameCapacity: AVAudioFrameCount(frames)) else { return }
@@ -290,6 +309,12 @@ enum SoundFeedback {
     // MARK: - Playback via AVAudioPlayer
 
     private static func playSound(_ label: String, volume: Float, fallback: ToneSpec? = nil) {
+        #if DEBUG
+        guard !suppressTestAudio else {
+            NSLog("[SoundFeedback] %@ suppressed for XCTest", label)
+            return
+        }
+        #endif
         soundQueue.async {
             let player = cachedPlayers[label] ?? (fallback.flatMap { cachedPlayers[$0.label] })
             guard let player else {
@@ -473,7 +498,7 @@ enum SoundFeedback {
             return url
         }
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent(AppDataNamespace.directoryName, isDirectory: true)
+            .appendingPathComponent(AppDataLocation.profileDirectoryName, isDirectory: true)
             .appendingPathComponent("Sounds", isDirectory: true)
         let url = appSupport.appendingPathComponent("\(filename).wav")
         return FileManager.default.fileExists(atPath: url.path) ? url : nil

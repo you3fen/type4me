@@ -10,15 +10,21 @@ actor DoubaoChatClient: LLMClient {
 
     init(
         provider: LLMProvider = .doubao,
-        bypassProxy: Bool = ProxyBypassMode.current.bypassLLM
+        bypassProxy: Bool = ProxyBypassMode.current.bypassLLM,
+        customSession: URLSession? = nil
     ) {
         self.provider = provider
-        let resources = LLMURLSessionFactory.make(
-            providerID: provider.rawValue,
-            bypassProxy: bypassProxy
-        )
-        session = resources.session
-        metricsDelegate = resources.metricsDelegate
+        if let customSession {
+            session = customSession
+            metricsDelegate = LLMURLSessionMetricsDelegate(providerID: provider.rawValue)
+        } else {
+            let resources = LLMURLSessionFactory.make(
+                providerID: provider.rawValue,
+                bypassProxy: bypassProxy
+            )
+            session = resources.session
+            metricsDelegate = resources.metricsDelegate
+        }
     }
 
     /// Pre-establish TCP+TLS connection so the first real request skips handshake.
@@ -183,50 +189,40 @@ actor DoubaoChatClient: LLMClient {
     ) async throws -> String {
         let requestStart = ContinuousClock.now
         DebugFileLogger.log("llm: request started model=\(model)")
+
+        var recordedOutcome = false
+        func recordOutcome(status: String, completionText: String, metrics: LLMExecutionMetrics?) {
+            guard !recordedOutcome else { return }
+            recordedOutcome = true
+            let durationSec = Double((ContinuousClock.now - requestStart).components.seconds) +
+                              Double((ContinuousClock.now - requestStart).components.attoseconds) / 1e18
+            LLMUsageRecorder.record(
+                featureSource: invocationContext?.featureSource ?? .dictationPolish,
+                provider: provider.rawValue,
+                model: model,
+                promptText: sourceText,
+                completionText: completionText,
+                durationSeconds: durationSec,
+                metrics: metrics,
+                status: status,
+                modeName: invocationContext?.modeName
+            )
+        }
+
         let (bytes, response): (URLSession.AsyncBytes, URLResponse)
         do {
             (bytes, response) = try await session.bytes(for: request)
         } catch {
-            let durationSec = Double((ContinuousClock.now - requestStart).components.seconds)
-            LLMUsageRecorder.record(
-                featureSource: invocationContext?.featureSource ?? .dictationPolish,
-                provider: provider.rawValue,
-                model: model,
-                promptText: sourceText,
-                completionText: "",
-                durationSeconds: durationSec,
-                status: "error",
-                modeName: invocationContext?.modeName
-            )
+            recordOutcome(status: "error", completionText: "", metrics: nil)
             throw error
         }
 
         guard let http = response as? HTTPURLResponse else {
-            let durationSec = Double((ContinuousClock.now - requestStart).components.seconds)
-            LLMUsageRecorder.record(
-                featureSource: invocationContext?.featureSource ?? .dictationPolish,
-                provider: provider.rawValue,
-                model: model,
-                promptText: sourceText,
-                completionText: "",
-                durationSeconds: durationSec,
-                status: "error",
-                modeName: invocationContext?.modeName
-            )
+            recordOutcome(status: "error", completionText: "", metrics: nil)
             throw LLMError.requestFailed(0)
         }
         guard http.statusCode == 200 else {
-            let durationSec = Double((ContinuousClock.now - requestStart).components.seconds)
-            LLMUsageRecorder.record(
-                featureSource: invocationContext?.featureSource ?? .dictationPolish,
-                provider: provider.rawValue,
-                model: model,
-                promptText: sourceText,
-                completionText: "",
-                durationSeconds: durationSec,
-                status: "error",
-                modeName: invocationContext?.modeName
-            )
+            recordOutcome(status: "error", completionText: "", metrics: nil)
             logger.error("LLM HTTP \(http.statusCode)")
             DebugFileLogger.log("LLM[\(model)]: HTTP \(http.statusCode)")
             throw LLMError.requestFailed(http.statusCode)
@@ -238,43 +234,64 @@ actor DoubaoChatClient: LLMClient {
         var loggedFirstToken = false
         var promptTokens: Int?
         var completionTokens: Int?
-
-        for try await line in bytes.lines {
-            lineCount += 1
-            guard line.hasPrefix("data: ") else { continue }
-            if !loggedFirstEvent {
-                loggedFirstEvent = true
-                DebugFileLogger.log("llm: first SSE event +\(ContinuousClock.now - requestStart) model=\(model)")
-            }
-            let payload = String(line.dropFirst(6))
-            if payload == "[DONE]" { break }
-            guard let data = payload.data(using: .utf8) else { continue }
-
-            if let chunk = try? JSONDecoder().decode(ChatStreamChunk.self, from: data) {
-                if let usage = chunk.usage {
-                    promptTokens = usage.prompt_tokens
-                    completionTokens = usage.completion_tokens
+        var receivedDone = false
+        do {
+            for try await line in bytes.lines {
+                lineCount += 1
+                guard line.hasPrefix("data: ") else { continue }
+                if !loggedFirstEvent {
+                    loggedFirstEvent = true
+                    DebugFileLogger.log("llm: first SSE event +\(ContinuousClock.now - requestStart) model=\(model)")
                 }
-                if let content = chunk.choices.first?.delta.content {
-                    if !loggedFirstToken, !content.isEmpty {
-                        loggedFirstToken = true
-                        DebugFileLogger.log("llm: first content token +\(ContinuousClock.now - requestStart) model=\(model)")
+                let payload = String(line.dropFirst(6))
+                if payload == "[DONE]" {
+                    receivedDone = true
+                    break
+                }
+                guard let data = payload.data(using: .utf8) else { continue }
+
+                if let chunk = try? JSONDecoder().decode(ChatStreamChunk.self, from: data) {
+                    if let usage = chunk.usage {
+                        promptTokens = usage.prompt_tokens
+                        completionTokens = usage.completion_tokens
                     }
-                    result += content
-                    if !content.isEmpty {
-                        await onDelta?(content)
+                    if let content = chunk.choices.first?.delta.content {
+                        if !loggedFirstToken, !content.isEmpty {
+                            loggedFirstToken = true
+                            DebugFileLogger.log("llm: first content token +\(ContinuousClock.now - requestStart) model=\(model)")
+                        }
+                        result += content
+                        if !content.isEmpty {
+                            await onDelta?(content)
+                        }
                     }
                 }
             }
+            guard receivedDone else {
+                DebugFileLogger.log("LLM[\(model)]: stream closed without [DONE] marker (lines=\(lineCount), chars=\(result.count))")
+                throw LLMError.streamIncomplete(L("未收到结束标记 [DONE]", "missing [DONE] terminal marker"))
+            }
+            if result.isEmpty && lineCount > 0 {
+                DebugFileLogger.log("LLM[\(model)]: \(lineCount) lines but 0 content chars")
+                throw LLMError.emptyResponse(L("流式响应没有文本", "stream contained no text"))
+            }
+            if result.isEmpty {
+                DebugFileLogger.log("LLM[\(model)]: 0 lines received (connection closed immediately)")
+                throw LLMError.emptyResponse(nil)
+            }
+        } catch {
+            let durationSec = Double((ContinuousClock.now - requestStart).components.seconds) +
+                              Double((ContinuousClock.now - requestStart).components.attoseconds) / 1e18
+            let metrics = LLMExecutionMetrics(
+                promptTokens: promptTokens,
+                completionTokens: completionTokens,
+                durationSeconds: durationSec,
+                isEstimated: promptTokens == nil || completionTokens == nil
+            )
+            recordOutcome(status: "error", completionText: result, metrics: metrics)
+            throw error
         }
-        if result.isEmpty && lineCount > 0 {
-            DebugFileLogger.log("LLM[\(model)]: \(lineCount) lines but 0 content chars")
-            throw LLMError.emptyResponse(L("流式响应没有文本", "stream contained no text"))
-        }
-        if result.isEmpty {
-            DebugFileLogger.log("LLM[\(model)]: 0 lines received (connection closed immediately)")
-            throw LLMError.emptyResponse(nil)
-        }
+
         let durationSec = Double((ContinuousClock.now - requestStart).components.seconds) +
                           Double((ContinuousClock.now - requestStart).components.attoseconds) / 1e18
         DebugFileLogger.log("llm: completed +\(ContinuousClock.now - requestStart) chars=\(result.count) model=\(model) promptTokens=\(promptTokens ?? -1) compTokens=\(completionTokens ?? -1)")
@@ -285,17 +302,7 @@ actor DoubaoChatClient: LLMClient {
             durationSeconds: durationSec,
             isEstimated: promptTokens == nil || completionTokens == nil
         )
-        LLMUsageRecorder.record(
-            featureSource: invocationContext?.featureSource ?? .dictationPolish,
-            provider: provider.rawValue,
-            model: model,
-            promptText: sourceText,
-            completionText: result,
-            durationSeconds: durationSec,
-            metrics: metrics,
-            status: "success",
-            modeName: invocationContext?.modeName
-        )
+        recordOutcome(status: "success", completionText: result, metrics: metrics)
 
         return result
     }
@@ -415,7 +422,7 @@ enum LLMError: Error, LocalizedError {
     case invalidURL
     case requestFailed(Int)
     case emptyResponse(String?)
-
+    case streamIncomplete(String?)
     var errorDescription: String? {
         switch self {
         case .invalidURL:
@@ -432,6 +439,11 @@ enum LLMError: Error, LocalizedError {
                 return L("LLM 未返回内容: \(raw)", "LLM returned no content: \(raw)")
             }
             return L("LLM 未返回内容", "LLM returned no content")
+        case .streamIncomplete(let detail):
+            if let detail {
+                return L("流式连接中断: \(detail)", "Stream connection interrupted: \(detail)")
+            }
+            return L("流式连接异常中断", "Stream connection interrupted prematurely")
         }
     }
 }

@@ -21,7 +21,7 @@ enum KeychainService {
     private static let keychainGroupedService = runningUnderXCTest
         ? "com.type4me.tests.grouped"
         : AppDataNamespace.keychainPrefix + ".grouped"
-    private static let credentialsDirectoryName = runningUnderXCTest ? "Type4MeTests" : AppDataNamespace.directoryName
+    private static let credentialsDirectoryName = AppDataLocation.profileDirectoryName
 
     /// Exposed internally so tests can fail fast instead of ever touching the
     /// production credential namespace or Application Support file.
@@ -29,7 +29,7 @@ enum KeychainService {
     #else
     private static let keychainScalarService = AppDataNamespace.keychainPrefix + ".scalar"
     private static let keychainGroupedService = AppDataNamespace.keychainPrefix + ".grouped"
-    private static let credentialsDirectoryName = AppDataNamespace.directoryName
+    private static let credentialsDirectoryName = AppDataLocation.profileDirectoryName
 
     /// Release builds contain no XCTest routing and always use production storage.
     static var isUsingTestStorage: Bool { false }
@@ -714,7 +714,7 @@ enum KeychainService {
         let fm = FileManager.default
         let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let oldDir = appSupport.appendingPathComponent("TypeFlow", isDirectory: true)
-        let newDir = appSupport.appendingPathComponent(AppDataNamespace.directoryName, isDirectory: true)
+        let newDir = appSupport.appendingPathComponent(AppDataLocation.profileDirectoryName, isDirectory: true)
 
         // Old directory must exist and contain real data (credentials.json is the marker)
         guard fm.fileExists(atPath: oldDir.appendingPathComponent("credentials.json").path) else { return }

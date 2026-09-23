@@ -59,11 +59,11 @@ enum DataBackupManager {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
     }
 
-    static var dataDirectory: URL { appSupport.appendingPathComponent(AppDataNamespace.directoryName, isDirectory: true) }
+    static var dataDirectory: URL { appSupport.appendingPathComponent(AppDataLocation.profileDirectoryName, isDirectory: true) }
 
     /// A sibling of the data directory, not a child of it.
     static var backupRoot: URL {
-        appSupport.appendingPathComponent(AppDataNamespace.directoryName + " Backups", isDirectory: true)
+        appSupport.appendingPathComponent(AppDataLocation.profileDirectoryName + " Backups", isDirectory: true)
     }
 
     // MARK: - Entry point

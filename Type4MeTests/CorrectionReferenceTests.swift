@@ -165,15 +165,14 @@ final class CorrectionReferenceTests: XCTestCase {
         XCTAssertEqual(AppDataNamespace.keychainPrefix, "com.type4me")
         #endif
         XCTAssertEqual(AppDataNamespace.directoryName, expectedDirectory)
-        let expectedRoot = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask
-        ).first!.appendingPathComponent(expectedDirectory, isDirectory: true)
+        let expectedRoot = AppDataLocation.profileDirectory
+        XCTAssertEqual(expectedRoot.lastPathComponent, "Type4MeTests")
         XCTAssertEqual(HotwordStorage.userFileURL, expectedRoot.appendingPathComponent("hotwords.json"))
         XCTAssertEqual(SnippetStorage.userFileURL, expectedRoot.appendingPathComponent("snippets.json"))
         XCTAssertEqual(CorrectionReferenceStorage.fileURL, expectedRoot.appendingPathComponent("correction-references.json"))
         XCTAssertEqual(DataBackupManager.dataDirectory, expectedRoot)
         XCTAssertEqual(DataBackupManager.backupRoot, expectedRoot.deletingLastPathComponent()
-            .appendingPathComponent(expectedDirectory + " Backups", isDirectory: true))
+            .appendingPathComponent("Type4MeTests Backups", isDirectory: true))
     }
 }
 
