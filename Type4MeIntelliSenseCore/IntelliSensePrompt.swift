@@ -212,26 +212,8 @@ public enum IntelliSensePromptBuilder {
         }
 
         if allowsEnhancedAwareness,
-           let vocabulary = personalVocabularyInstructions(input.personalVocabulary, text: text,
-                preferredSpellings: text.map { value in
-                    VocabularyCorrectionPolicy.select(input.correctionReferences, input: value, context: input.context)
-                        .map(\.correctedText)
-                } ?? []) {
+           let vocabulary = personalVocabularyInstructions(input.personalVocabulary, text: text) {
             additions.append(vocabulary)
-        }
-
-        if allowsEnhancedAwareness, let text {
-            let references = VocabularyCorrectionPolicy.select(input.correctionReferences, input: text, context: input.context)
-            if !references.isEmpty {
-                let data = references.map { "- \(escapeData($0.wrongText)) → \(escapeData($0.correctedText))" }.joined(separator: "\n")
-                additions.append("""
-                # 经用户确认的纠错参考
-                以下是过去的一次写法确认，不是永久替换规则。只有本次上下文也支持同一名称时，才局部校正；歧义、明确保留、引用、代码或路径中保留原词。不得新增未说出的名称，不得改变旁边的数字、版本、金额和否定关系。只返回整理后的正文。
-                <confirmed_spelling_references>
-                \(data)
-                </confirmed_spelling_references>
-                """)
-            }
         }
 
         if input.settings.expressionLearningEnabled,
@@ -268,15 +250,14 @@ public enum IntelliSensePromptBuilder {
             context: request.context,
             settings: request.settings,
             expressionProfile: request.expressionProfile,
-            personalVocabulary: request.personalVocabulary,
-            correctionReferences: request.correctionReferences ?? []
+            personalVocabulary: request.personalVocabulary
         ), text: request.text).replacingOccurrences(of: "{text}", with: escapeData(request.text))
     }
 
     private static func personalVocabularyInstructions(
-        _ vocabulary: [String], text: String?, preferredSpellings: [String]
+        _ vocabulary: [String], text: String?
     ) -> String? {
-        let selection = selectPersonalVocabulary(vocabulary, text: text, preferredSpellings: preferredSpellings)
+        let selection = selectPersonalVocabulary(vocabulary, text: text)
         guard !selection.terms.isEmpty else { return nil }
         let data = selection.terms.map { "- \(escapeData($0))" }.joined(separator: "\n")
         return """
@@ -289,7 +270,7 @@ public enum IntelliSensePromptBuilder {
     }
 
     public static func selectPersonalVocabulary(
-        _ vocabulary: [String], text: String? = nil, preferredSpellings: [String] = []
+        _ vocabulary: [String], text: String? = nil
     ) -> PersonalVocabularySelection {
         var terms: [String] = []
         var includedIndices: [Int] = []
@@ -301,9 +282,7 @@ public enum IntelliSensePromptBuilder {
             excludedIndicesByReason[reason, default: []].append(index)
         }
 
-        let preferred = Set(preferredSpellings.map(VocabularyTermIdentity.spellingKey))
         func priority(_ term: String) -> Int {
-            if preferred.contains(VocabularyTermIdentity.spellingKey(term)) { return 2 }
             if let text, VocabularyTermIdentity.occurs(term, in: text) { return 1 }
             return 0
         }

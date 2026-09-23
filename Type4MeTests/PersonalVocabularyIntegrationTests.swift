@@ -14,21 +14,6 @@ final class PersonalVocabularyIntegrationTests: XCTestCase {
         XCTAssertEqual(result?.text, "请打开 Type4Me。")
     }
 
-    func testConfirmedReferenceUsesSameRequestAndAllowsBrandButNotNewVersion() async {
-        let reference = VocabularyCorrectionReference(wrongText: "Tell me", correctedText: "Type4Me",
-            bundleIdentifier: "com.example.editor", sourceRecordID: "synthetic-edit")
-        let input = "把 Tell me 切换到 2.5 版本。"
-        let good = "把 Type4Me 切换到 2.5 版本。"
-        let client = VocabularyMockClient(output: good)
-        let result = await run(text: input, vocabulary: ["Type4Me"], client: client, references: [reference])
-        let prompts = await client.prompts
-        XCTAssertEqual(prompts.count, 1)
-        XCTAssertTrue(prompts[0].contains("<confirmed_spelling_references>"))
-        XCTAssertEqual(result?.text, good)
-        let bad = await run(text: input, vocabulary: ["Type4Me"], client: VocabularyMockClient(output: "把 Type4Me 切换到 2.6 版本。"), references: [reference])
-        XCTAssertEqual(bad?.text, input)
-    }
-
     func testCancelledInputDoesNotAddPolishingRequest() async {
         let client = VocabularyMockClient(output: "不应使用")
         _ = await run(text: "请打开太不封闭。", vocabulary: ["Type4Me"], client: client, cancelled: true)
@@ -74,20 +59,13 @@ final class PersonalVocabularyIntegrationTests: XCTestCase {
         }
     }
 
-    func testLearningDescriptionChangesWithLanguageAndScope() {
-        XCTAssertEqual(CorrectionLearningCardCopy.detail(scope: .hotwordOnly, language: "zh"), "记住正确词，保留现有替换规则")
-        XCTAssertEqual(CorrectionLearningCardCopy.detail(scope: .hotwordOnly, language: "en"), "Remember the word; keep existing replacements")
-        XCTAssertEqual(CorrectionLearningCardCopy.detail(scope: .hotwordAndMapping, language: "zh"), "添加到热词和片段替换")
-        XCTAssertEqual(CorrectionLearningCardCopy.detail(scope: .hotwordAndMapping, language: "en"), "Add to hotwords and replacements")
-    }
-
     private func run(text: String, vocabulary: [String], client: VocabularyMockClient,
-                     cancelled: Bool = false, threshold: Int = 0, sensitive: Bool = false, references: [VocabularyCorrectionReference] = []) async -> RecognitionSession.IntelliSenseOutputForTesting? {
+                     cancelled: Bool = false, threshold: Int = 0, sensitive: Bool = false) async -> RecognitionSession.IntelliSenseOutputForTesting? {
         let target = TargetApplicationContext(processIdentifier: nil, bundleIdentifier: "com.example.editor", displayName: "Editor")
         let snapshot = IntelliSenseContextSnapshot(bundleIdentifier: target.bundleIdentifier, appName: "Editor", appCategory: .development, controlCategory: .multiLine, contextBeforeCursor: "", contextAfterCursor: "", availability: sensitive ? .sensitive : .appAndControl, wasTruncated: false)
         let session = RecognitionSession()
         await session.setInjectedLLMClientForTesting(client)
-        return await session.processIntelliSenseForTesting(text: text, startingSnapshot: snapshot, settings: IntelliSenseSettings(), cancelled: cancelled, shortTextExemption: threshold, personalVocabulary: vocabulary, correctionReferences: references, currentTarget: { target }, capture: { _, _ in snapshot })
+        return await session.processIntelliSenseForTesting(text: text, startingSnapshot: snapshot, settings: IntelliSenseSettings(), cancelled: cancelled, shortTextExemption: threshold, personalVocabulary: vocabulary, currentTarget: { target }, capture: { _, _ in snapshot })
     }
 }
 

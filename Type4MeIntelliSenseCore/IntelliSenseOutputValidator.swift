@@ -55,11 +55,12 @@ public enum IntelliSenseOutputValidator {
         input: String,
         candidate: String,
         context: IntelliSenseContextSnapshot? = nil,
-        correctionReferences: [VocabularyCorrectionReference] = []
+        vocabulary: [String] = []
     ) -> IntelliSenseProcessingResult {
-        let validationInput = VocabularyCorrectionPolicy.validationInput(input, candidate: candidate, references: correctionReferences, context: context)
-        let analysis = CorrectionIntentAnalysis.analyze(validationInput)
-        let decision = evaluate(input: validationInput, output: candidate, context: context, analysis: analysis)
+        let analysis = CorrectionIntentAnalysis.analyze(input)
+        let decision = evaluate(
+            input: input, output: candidate, context: context, analysis: analysis, vocabulary: vocabulary
+        )
         let final: String
         if case .reject = decision { final = input } else { final = candidate }
         return IntelliSenseProcessingResult(
@@ -74,16 +75,17 @@ public enum IntelliSenseOutputValidator {
         input: String,
         output: String,
         context: IntelliSenseContextSnapshot? = nil,
-        correctionReferences: [VocabularyCorrectionReference] = []
+        vocabulary: [String] = []
     ) -> IntelliSenseGuardDecision {
-        process(input: input, candidate: output, context: context, correctionReferences: correctionReferences).decision
+        process(input: input, candidate: output, context: context, vocabulary: vocabulary).decision
     }
 
     private static func evaluate(
         input: String,
         output: String,
         context: IntelliSenseContextSnapshot?,
-        analysis: CorrectionIntentAnalysis
+        analysis: CorrectionIntentAnalysis,
+        vocabulary: [String]
     ) -> IntelliSenseGuardDecision {
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .reject(.emptyOutput) }
@@ -123,7 +125,7 @@ public enum IntelliSenseOutputValidator {
         guard !introducesSensitiveContent(input: input, output: trimmed) else {
             return .reject(.sensitiveContentLeak)
         }
-        guard !inventsProtectedFact(input: input, output: trimmed, context: context) else {
+        guard !inventsProtectedFact(input: input, output: trimmed, context: context, vocabulary: vocabulary) else {
             return .reject(.inventedProtectedFact)
         }
 
@@ -297,15 +299,20 @@ public enum IntelliSenseOutputValidator {
     private static func inventsProtectedFact(
         input: String,
         output: String,
-        context: IntelliSenseContextSnapshot?
+        context: IntelliSenseContextSnapshot?,
+        vocabulary: [String]
     ) -> Bool {
         let inputTokens = ProtectedFactExtractor.tokens(in: input) + mixedDigitTerms(in: input)
+        // A user vocabulary spelling such as "Type4Me" is not an invented fact.
+        // Terms without letters (versions, amounts) never get this exemption.
+        let vocabularyTerms = vocabulary.filter { $0.rangeOfCharacter(from: .letters) != nil }
         let outputTokens = ProtectedFactExtractor.tokens(in: output) + mixedDigitTerms(in: output)
         let contextText = (context?.contextBeforeCursor ?? "") + "\n" + (context?.contextAfterCursor ?? "")
         let contextTokens = ProtectedFactExtractor.tokens(in: contextText) + mixedDigitTerms(in: contextText)
         let additions = outputTokens.filter { token in
             !inputTokens.contains(where: { $0.caseInsensitiveCompare(token) == .orderedSame })
                 && !contextTokens.contains(where: { $0.caseInsensitiveCompare(token) == .orderedSame })
+                && !vocabularyTerms.contains(where: { $0.caseInsensitiveCompare(token) == .orderedSame })
         }
         guard !additions.isEmpty else { return false }
         // New Arabic facts are hard errors when the source already contained

@@ -21,14 +21,12 @@ enum DataBackupManager {
         "modes.json",
         "snippets.json",
         "hotwords.json",
-        "correction-references.json",
         "hotwords.txt",
         "credentials.json",
         "intelli-sense-settings.json",
         "intelli-sense-expression-profile.json",
         "revise-settings.json",
-        "batch-correction-suggestions-v1.json",
-        "jieba-user-dictionary-v1.utf8",
+        "vocabulary-learning.json",
     ]
 
     /// Directories copied whole. `app-snippets/` holds per-app replacement rules

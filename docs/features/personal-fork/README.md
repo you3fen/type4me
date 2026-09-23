@@ -13,35 +13,41 @@ This is a **fork-only preview**, not an upstream release. Upstream remains
   bounded personal vocabulary in the existing Intelli Sense request, and
   non-content diagnostic events.
 
-## Personal changes
+## Personal changes: accuracy pipeline (2026-09-23)
 
-A correction confirmation defaults to an **app-scoped spelling reference**.
-It saves the wrong/right pair even when the canonical hotword already exists.
-Repeating an identical confirmation returns "already recorded". It does not
-create or modify a forced snippet. "Always replace globally" is a separate,
-unchecked opt-in; old manually configured snippets retain their semantics.
-The References sheet in Vocabulary can inspect/remove learned pairs. This
-removes reference evidence, not a separately configured hotword or snippet.
+One vocabulary list (`hotwords.json`) is used in three places:
 
-On the next Intelli Sense request, eligible references from the same app are
-selected using the frozen processing scene (not the eventual paste recipient).
-Only unambiguous, uniquely present source spans are considered; quoted/code/
-path/identifier and explicit preservation contexts abstain. Budget: 12 pairs,
-800 term characters; store cap: 256 pairs. The original hotword prompt budget
-remains 20 terms/400 term characters. Character limits are not token limits.
+1. **Volcano ASR**: sent as `request.corpus.context` (`{"hotwords":[{"word":…}]}`),
+   deduplicated and capped at the documented 100-token direct-pass budget. The
+   cloud boosting-table sync and `context_history_length` were removed.
+2. **Accent-tolerant pinyin pass** (`PhoneticVocabularyMatcher`): after snippets,
+   in every mode. Folds an/ang, en/eng, in/ing, z/zh, c/ch, s/sh and n/l, and
+   rewrites only terms of three or more Chinese characters on word-aligned
+   windows that are not themselves dictionary words (身材有数 → 生财有术). Two-
+   character homophones are never touched; an LLM hint for them rewrote real
+   words (会花 → 会话) and was removed. Rewrites are recorded in history with
+   `origin: phoneticVocabulary`.
+3. **Intelli Sense prompt**: the existing 20-term / 400-character personal
+   vocabulary block. The output guard accepts a new token only when it is a
+   vocabulary term with letters (e.g. `Type4Me`); versions and amounts are
+   still protected.
 
-The single existing LLM request receives the references as escaped data, not
-instructions or unconditional replacements. No extra LLM call, ASR model,
-recording, screen scraping or global fuzzy substitution is introduced. Quick
-mode never calls this reference/polishing path. Model behavior remains to be
-validated with real dictation; deterministic/mock tests are not accuracy tests.
+Exact replacement rules (`snippets.json`, per-app `app-snippets/`) are unchanged.
 
-The output validator recognizes only exact, local, evidenced replacements with
-matching surrounding anchors. It normalizes a *validation copy* of the input;
-never rewrites the model output or whitelists the whole personal dictionary.
-Other checks (numbers, versions, negations, paths, etc.) remain enabled. On
-rejection it returns the original input. Aggressive simultaneous rephrasing may
-abstain; this is intentional. Digit-bearing brand handling is case-independent.
+**Learning from edits** (`VocabularyEditLearner`, `VocabularyLearningStore`): the
+post-injection AX observer still records the final edit with the history record.
+When "从修改中学习热词 / Learn Hotwords from Edits" is on, a single contiguous term
+replacement (Chinese 2–8 characters of equal length, or a Latin-led 3–30
+character term; not case-only, not numbers) is counted in
+`vocabulary-learning.json`. The second correction to the same term appends it to
+the hotwords. There is no confirmation card. A replay over local history
+promoted only real terms (Type4Me, Codex, 菜獾, 生财有术, Raycast, Claude).
+
+Removed with this change (Plan A and the upstream immediate-correction stack):
+confirmed spelling references and their sheet, the floating correction card,
+immediate/affinity/batch correction analyzers, CppJieba, the smart-correction
+sheet and built-in hotword/snippet lists. Historical design and verification
+notes in this folder describe those removed features.
 
 ## Isolation and build
 
@@ -70,8 +76,8 @@ Set both `TYPE4ME_PERSONAL_BUILD=1` and `TYPE4ME_DEV_BUILD=1`. Personal identity
 and upstream-update blocking stay enabled, while data uses
 `~/Library/Application Support/Type4Me/` and Keychain services remain
 `com.type4me.grouped` / `com.type4me.scalar`. UserDefaults stays in the installed
-Dev bundle's domain; do not copy production preferences into it. Correction
-references and data backups follow the shared directory.
+Dev bundle's domain; do not copy production preferences into it. Vocabulary
+learning state and data backups follow the shared directory.
 
 Use the existing Dev packager in a clean cloud-only worktree, staging first:
 
@@ -87,7 +93,7 @@ The identity values above are examples: inspect the installed Dev app and reuse
 its name, bundle ID, scheme, certificate and designated requirement. Do not use
 `package-personal.sh` for this shared-data build. Verify the staged signature
 and requirement before quitting both apps, backing up the old Dev app, shared
-data (including correction references), consistent SQLite snapshots and both
+data, consistent SQLite snapshots and both
 preference domains. Replace only the Dev app. Preserve Keychain access control;
 restore the old app if launch fails. Do not run stable and Dev simultaneously
 while checking the shared data.
@@ -98,15 +104,13 @@ shared personal Dev build. Tests use synthetic data and temporary stores.
 
 ## Tests and limits
 
-`CorrectionReferenceTests` covers persistence/duplicates/failures, same-app
-selection, old JSON decoding, numeral-preserving edits, negative contexts and
-namespace isolation. `PersonalVocabularyIntegrationTests` uses a deterministic
-mock to check one-call processing and validator wiring. Existing destination,
-learning, guard and usage tests remain. No personal history or vocabulary files
-are committed; examples are synthetic and no paid model calls are made by CI.
+`VocabularyEditLearnerTests`, `PhoneticVocabularyMatcherTests` and
+`VolcProtocolTests` cover the learning rules, pinyin folding/word boundaries and
+the Volcano request shape with examples shaped after real history.
+`PersonalVocabularyIntegrationTests` and `PersonalProvenanceIntegrationTests` use
+deterministic mocks for the single-request prompt and guard wiring. These are
+not ASR or model accuracy measurements; real dictation remains the acceptance.
 
-Known limits: some compound/multiple manual edits still fail the original
-candidate gates; old global snippets can still over-replace; the general guard
-is not a semantic proof and an unrelated trailing-explanation gap remains.
-Reference selection is conservative and depends on app identity and reliable
-observed editing. A confirmed spelling alone is not an acoustic ground truth.
+Known limits: learning runs only in Intelli Sense mode; the pinyin pass uses
+Apple's default reading for polyphonic characters; two-character accent errors
+rely on hotword boosting and the LLM.

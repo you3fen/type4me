@@ -12,7 +12,7 @@ export CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 export VARIANT=cloud
 export ARCH="${ARCH:-universal}"
 export APP_BUILD="${APP_BUILD:-1}"
-if [[ -f "$ROOT/Frameworks/sherpa-onnx.xcframework/Info.plist" || -f "$ROOT/Type4Me/CloudSubscription/marker" || -f "$ROOT/CppJiebaBridge/marker" ]]; then
+if [[ -f "$ROOT/Frameworks/sherpa-onnx.xcframework/Info.plist" || -f "$ROOT/Type4Me/CloudSubscription/marker" ]]; then
   echo "Use a clean cloud-only checkout for the personal preview; refusing to alter local capability markers." >&2
   exit 1
 fi

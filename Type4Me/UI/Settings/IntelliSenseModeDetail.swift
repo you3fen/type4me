@@ -60,10 +60,10 @@ struct IntelliSenseModeDetail: View, SettingsCardHelpers {
                 )
                 SettingsDivider()
                 awarenessToggle(
-                    L("纠错词检测（Beta）", "Correction Detection (Beta)"),
+                    L("从修改中学习热词", "Learn Hotwords from Edits"),
                     subtitle: L(
-                        "在本地短暂观察智能感知输出后的修改，最后修改结果可保存到历史；纠错词经你确认后才加入全局生词表。",
-                        "Locally observe edits after Intelli Sense output and save the last edit with its history record; a correction joins global vocabulary only after you confirm it."
+                        "在本地短暂观察智能感知输出后的修改，并把最后修改结果保存到历史；同一个词你手动改对两次后，自动加入热词，不弹窗。",
+                        "Locally observe edits after Intelli Sense output and save the last edit with its history record; after you correct the same term twice, it is added to your hotwords automatically, without a prompt."
                     ),
                     keyPath: \.correctionDetectionEnabled
                 )

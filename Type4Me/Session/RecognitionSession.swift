@@ -445,7 +445,6 @@ actor RecognitionSession {
         cancelled: Bool = false,
         shortTextExemption: Int = 0,
         personalVocabulary: [String] = [],
-        correctionReferences: [VocabularyCorrectionReference] = [],
         applySnippets: @escaping @Sendable (String, String?) -> SnippetApplication = { text, _ in
             SnippetApplication(text: text, appliedRules: [])
         },
@@ -455,8 +454,6 @@ actor RecognitionSession {
         freezeIntelliSenseForTesting(snapshot: startingSnapshot, settings: settings)
         intelliSenseSettings = settings
         personalVocabularySnapshot = personalVocabulary
-        correctionReferenceSnapshot = correctionReferences
-        requestCorrectionReferences = []
         targetBundleId = startingSnapshot.bundleIdentifier
         intelliSenseTarget = TargetApplicationContext(
             processIdentifier: nil,
@@ -504,26 +501,6 @@ actor RecognitionSession {
     private let diagnosticInstanceID = UUID().uuidString
     private var diagnosticSessionID: String { "\(diagnosticInstanceID)-\(sessionGeneration)" }
     private var personalVocabularySnapshot: [String]?
-    private var correctionReferenceSnapshot: [VocabularyCorrectionReference]?
-    private var requestCorrectionReferences: [VocabularyCorrectionReference] = []
-
-    private func correctionReferences(for snapshot: IntelliSenseContextSnapshot, text: String) -> [VocabularyCorrectionReference] {
-        if snapshot.availability == .blacklisted || snapshot.availability == .sensitive {
-            requestCorrectionReferences = []
-            return []
-        }
-        if correctionReferenceSnapshot == nil {
-            do { correctionReferenceSnapshot = try CorrectionReferenceStorage.load() }
-            catch {
-                DebugFileLogger.log("correction reference load failed session=\(diagnosticSessionID)")
-                correctionReferenceSnapshot = []
-            }
-        }
-        requestCorrectionReferences = VocabularyCorrectionPolicy.select(correctionReferenceSnapshot ?? [], input: text, context: snapshot)
-        DebugFileLogger.log("correction references session=\(diagnosticSessionID) selected=\(requestCorrectionReferences.count)")
-        return requestCorrectionReferences
-    }
-
     private static func vocabularyFingerprint(_ words: [String]) -> String {
         let data = (try? JSONEncoder().encode(words)) ?? Data()
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
@@ -538,9 +515,7 @@ actor RecognitionSession {
             personalVocabularySnapshot = HotwordStorage.load()
         }
         let words = personalVocabularySnapshot ?? []
-        let references = correctionReferences(for: snapshot, text: text)
-        let selection = IntelliSensePromptBuilder.selectPersonalVocabulary(words, text: text,
-            preferredSpellings: references.map(\.correctedText))
+        let selection = IntelliSensePromptBuilder.selectPersonalVocabulary(words, text: text)
         let reasons = selection.excludedIndicesByReason.keys.sorted().map {
             "\($0):\(selection.excludedIndicesByReason[$0] ?? [])"
         }.joined(separator: ",")
@@ -3190,7 +3165,7 @@ actor RecognitionSession {
             input: input,
             candidate: output,
             context: intelliSenseRequestContext?.snapshot,
-            correctionReferences: requestCorrectionReferences
+            vocabulary: personalVocabularySnapshot ?? HotwordStorage.load()
         )
         intelliSenseLastProcessingResult = result
         DebugFileLogger.log(
@@ -3247,8 +3222,7 @@ actor RecognitionSession {
                 context: context.snapshot,
                 settings: context.settings,
                 expressionProfile: context.expressionProfile,
-                personalVocabulary: personalVocabulary(for: context.snapshot, text: text ?? ""),
-                correctionReferences: correctionReferences(for: context.snapshot, text: text ?? "")
+                personalVocabulary: personalVocabulary(for: context.snapshot, text: text ?? "")
             ))
         }
 
@@ -3299,8 +3273,7 @@ actor RecognitionSession {
             context: snapshot,
             settings: settings,
             expressionProfile: expressionProfile,
-            personalVocabulary: personalVocabulary(for: snapshot, text: text ?? ""),
-            correctionReferences: correctionReferences(for: snapshot, text: text ?? "")
+            personalVocabulary: personalVocabulary(for: snapshot, text: text ?? "")
         ))
     }
 
@@ -3313,10 +3286,10 @@ actor RecognitionSession {
         let snippets = SnippetStorage.applyEffectiveTracking(to: text, bundleId: bundleId) { scope, index, count in
             DebugFileLogger.log("vocabulary snippet session=\(self.diagnosticSessionID) scope=\(scope) index=\(index) matches=\(count)")
         }
-        // Accent-tolerant vocabulary pass on the snippet output. Only long,
-        // word-aligned matches rewrite text; shorter ones become LLM hints.
+        // Accent-tolerant vocabulary pass on the snippet output: only terms of
+        // three or more characters, on word-aligned windows, are rewritten.
         let phonetic = PhoneticVocabularyMatcher.applyReplacements(
-            to: snippets.text, vocabulary: phoneticVocabulary()
+            to: snippets.text, vocabulary: HotwordStorage.load()
         )
         guard !phonetic.applied.isEmpty else { return snippets }
         DebugFileLogger.log("vocabulary phonetic session=\(diagnosticSessionID) replacements=\(phonetic.applied.count)")
@@ -3324,14 +3297,6 @@ actor RecognitionSession {
             AppliedSnippetRule(trigger: $0.window, value: $0.term, bundleId: nil, origin: .phoneticVocabulary)
         }
         return SnippetApplication(text: phonetic.text, appliedRules: snippets.appliedRules + rules)
-    }
-
-    /// User hotwords plus confirmed correction spellings: the terms the user has
-    /// explicitly said they write this way.
-    private func phoneticVocabulary() -> [String] {
-        let hotwords = HotwordStorage.load()
-        let confirmed = (try? CorrectionReferenceStorage.load())?.map(\.correctedText) ?? []
-        return hotwords + confirmed
     }
 
     private var refreshesIntelliSenseAtProcessing: Bool {
@@ -3390,8 +3355,6 @@ actor RecognitionSession {
         intelliSenseContextTask?.cancel()
         intelliSenseContextTask = nil
         personalVocabularySnapshot = nil
-        correctionReferenceSnapshot = nil
-        requestCorrectionReferences = []
         intelliSenseRequestContext = nil
         intelliSenseSettings = nil
         intelliSenseTarget = nil

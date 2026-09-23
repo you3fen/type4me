@@ -89,15 +89,13 @@ The built binary is at `.build/release/Type4Me`.
 
 ## Build Variants
 
-Two supported product variants are built from the same codebase via conditional compilation flags. The compact CppJieba experiment is an independent optional capability:
+Two supported product variants are built from the same codebase via conditional compilation flags:
 
 | Variant | `HAS_SHERPA_ONNX` | `HAS_CLOUD_SUBSCRIPTION` | Arch | Description |
 |---------|---|---|---|---|
 | **pure** | no | no | universal | Open-source cloud edition (BYOK API keys) |
 | **official** | no | yes | universal | Archived subscription edition; the build script intentionally rejects it. |
 | **local** | yes | no | arm64 | Open-source local edition (bundled SenseVoice + Qwen3-ASR) |
-
-`ENABLE_CPPJIEBA=1` keeps `CppJiebaBridge/marker` visible while running `build-dmg.sh`, which adds the C++ bridge and compact dictionary resources. It defaults to `0`, so normal release packages do not pay the binary/resource cost until the experiment is explicitly enabled. A compiled build also has the local `tf_cppJiebaExperimentEnabled` runtime switch; disabling it falls back to `NLTokenizer` without rebuilding.
 
 ### Subscription paused (2026-04)
 
@@ -130,9 +128,6 @@ Public GitHub Releases ship only `pure` (universal) and `local` (arm64).
 ```bash
 # Open-source cloud edition (no subscription, no local ASR)
 VARIANT=pure bash scripts/build-dmg.sh
-
-# Same edition with the compact CppJieba experiment enabled
-ENABLE_CPPJIEBA=1 VARIANT=pure bash scripts/build-dmg.sh
 
 # Open-source local edition (bundled models, Apple Silicon only)
 VARIANT=local bash scripts/build-dmg.sh

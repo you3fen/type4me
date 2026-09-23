@@ -198,26 +198,23 @@ public struct IntelliSenseRequest: Equatable, Codable, Sendable {
     /// User-configured canonical spellings. They are optional reference data for
     /// the existing Intelli Sense request, never replacement rules.
     public var personalVocabulary: [String]
-    public var correctionReferences: [VocabularyCorrectionReference]?
 
     public init(
         text: String,
         context: IntelliSenseContextSnapshot,
         settings: IntelliSenseSettings,
         expressionProfile: EffectiveExpressionProfile? = nil,
-        personalVocabulary: [String] = [],
-        correctionReferences: [VocabularyCorrectionReference] = []
+        personalVocabulary: [String] = []
     ) {
         self.text = text
         self.context = context
         self.settings = settings
         self.expressionProfile = expressionProfile
         self.personalVocabulary = personalVocabulary
-        self.correctionReferences = correctionReferences
     }
 
     private enum CodingKeys: String, CodingKey {
-        case text, context, settings, expressionProfile, personalVocabulary, correctionReferences
+        case text, context, settings, expressionProfile, personalVocabulary
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -226,7 +223,6 @@ public struct IntelliSenseRequest: Equatable, Codable, Sendable {
         settings = try values.decode(IntelliSenseSettings.self, forKey: .settings)
         expressionProfile = try values.decodeIfPresent(EffectiveExpressionProfile.self, forKey: .expressionProfile)
         personalVocabulary = try values.decodeIfPresent([String].self, forKey: .personalVocabulary) ?? []
-        correctionReferences = try values.decodeIfPresent([VocabularyCorrectionReference].self, forKey: .correctionReferences) ?? []
     }
 }
 
@@ -235,19 +231,16 @@ public struct IntelliSensePromptInput: Equatable, Sendable {
     public let settings: IntelliSenseSettings
     public let expressionProfile: EffectiveExpressionProfile?
     public let personalVocabulary: [String]
-    public let correctionReferences: [VocabularyCorrectionReference]
 
     public init(
         context: IntelliSenseContextSnapshot,
         settings: IntelliSenseSettings,
         expressionProfile: EffectiveExpressionProfile?,
-        personalVocabulary: [String] = [],
-        correctionReferences: [VocabularyCorrectionReference] = []
+        personalVocabulary: [String] = []
     ) {
         self.context = context
         self.settings = settings
         self.expressionProfile = expressionProfile
         self.personalVocabulary = personalVocabulary
-        self.correctionReferences = correctionReferences
     }
 }

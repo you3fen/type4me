@@ -102,40 +102,6 @@ final class CorrectionDiffAnalyzerTests: XCTestCase {
         XCTAssertTrue(TechnicalTokenBoundaryResolver.isSingleStableToken("Open AI"))
     }
 
-    func testImmediateMixedScriptCorrectionUsesChineseBoundaryValidation() async {
-        let segmenter = MixedScriptAgreeingSegmenter()
-
-        let result = await ImmediateCorrectionAnalyzer.analyze(
-            original: "明天早上还要跟杰瑞开会",
-            edited: "明天早上还要跟Jerry开会",
-            chineseSegmenter: segmenter
-        )
-
-        XCTAssertEqual(result, .candidate(wrongText: "杰瑞", correctedText: "Jerry"))
-        let segmenterCallCount = await segmenter.callCount()
-        XCTAssertEqual(segmenterCallCount, 1)
-    }
-
-    func testImmediateMixedScriptCorrectionRejectsDisputedChineseBoundary() async {
-        let result = await ImmediateCorrectionAnalyzer.analyze(
-            original: "明天早上还要跟杰瑞开会",
-            edited: "明天早上还要跟Jerry开会",
-            chineseSegmenter: MixedScriptDisagreeingSegmenter()
-        )
-
-        XCTAssertEqual(result, .rejected(.invalidCandidate))
-    }
-
-    func testImmediateMixedScriptCorrectionFallsBackToNativeTokenizer() async {
-        let result = await ImmediateCorrectionAnalyzer.analyze(
-            original: "明天早上还要跟杰瑞开会",
-            edited: "明天早上还要跟Jerry开会",
-            chineseSegmenter: NaturalLanguageChineseWordSegmenter()
-        )
-
-        XCTAssertEqual(result, .candidate(wrongText: "杰瑞", correctedText: "Jerry"))
-    }
-
     func testSingleChineseCharacterCorrectionIsRejectedAsAmbiguous() throws {
         let baseline = "我们使用阶越星辰模型"
         let result = CorrectionDiffAnalyzer.analyze(
@@ -201,46 +167,6 @@ final class CorrectionDiffAnalyzerTests: XCTestCase {
         XCTAssertEqual(result, .rejected(.invalidCandidate))
     }
 
-    func testNumericFactChangeIsNotAnImmediateCorrection() async {
-        let result = await ImmediateCorrectionAnalyzer.analyze(
-            original: "版本 3",
-            edited: "版本 4"
-        )
-
-        XCTAssertEqual(result, .rejected(.invalidCandidate))
-    }
-
-    func testImmediateChineseHomophoneCorrectionHasHighAffinity() async {
-        let result = await ImmediateCorrectionAnalyzer.analyze(
-            original: "这个人的加好程度很高",
-            edited: "这个人的佳豪程度很高",
-            confirmedMappings: []
-        )
-
-        XCTAssertEqual(result, .candidate(wrongText: "加好", correctedText: "佳豪"))
-    }
-
-    func testImmediateUnrelatedChineseEditIsHistoryOnly() async {
-        let result = await ImmediateCorrectionAnalyzer.analyze(
-            original: "今天吃苹果",
-            edited: "今天吃微软",
-            confirmedMappings: []
-        )
-
-        XCTAssertEqual(result, .rejected(.lowAffinity))
-    }
-
-    func testImmediateUnrelatedMixedScriptEditIsHistoryOnly() async {
-        let result = await ImmediateCorrectionAnalyzer.analyze(
-            original: "今天吃苹果",
-            edited: "今天吃Microsoft",
-            chineseSegmenter: NaturalLanguageChineseWordSegmenter(),
-            confirmedMappings: []
-        )
-
-        XCTAssertEqual(result, .rejected(.lowAffinity))
-    }
-
     func testSensitiveAndOverlongCandidatesAreRejected() {
         let emailBaseline = "wrong@example.com"
         let emailResult = CorrectionDiffAnalyzer.analyze(
@@ -269,93 +195,6 @@ final class CorrectionDiffAnalyzerTests: XCTestCase {
 }
 
 final class CorrectionAffinityAnalyzerTests: XCTestCase {
-    func testLatinSpellingCorrectionsHaveHighAffinity() {
-        for (wrong, corrected) in [
-            ("Ghotty", "Ghostty"),
-            ("Ghsotty", "Ghostty"),
-            ("Open AI", "OpenAI"),
-        ] {
-            let result = CorrectionAffinityAnalyzer.evaluate(wrong: wrong, corrected: corrected)
-            XCTAssertTrue(result.isHighConfidence, "failed case \(wrong) → \(corrected)")
-            XCTAssertEqual(result.reason, .orthographic)
-        }
-    }
-
-    func testUnrelatedLatinWordsHaveLowAffinity() {
-        let result = CorrectionAffinityAnalyzer.evaluate(wrong: "apple", corrected: "Microsoft")
-
-        XCTAssertFalse(result.isHighConfidence)
-        XCTAssertEqual(result.reason, .unrelated)
-    }
-
-    func testChineseHomophoneHasHighAffinity() {
-        let result = CorrectionAffinityAnalyzer.evaluate(wrong: "加好", corrected: "佳豪")
-
-        XCTAssertTrue(result.isHighConfidence)
-        XCTAssertEqual(result.reason, .chineseHomophone)
-    }
-
-    func testUnrelatedChineseWordsHaveLowAffinity() {
-        let result = CorrectionAffinityAnalyzer.evaluate(wrong: "苹果", corrected: "微软")
-
-        XCTAssertFalse(result.isHighConfidence)
-        XCTAssertEqual(result.reason, .unrelated)
-    }
-
-    func testChineseEnglishTransliterationsHaveHighAffinity() {
-        for (wrong, corrected) in [("杰瑞", "Jerry"), ("阿卡迪亚", "Arcadia")] {
-            let result = CorrectionAffinityAnalyzer.evaluate(wrong: wrong, corrected: corrected)
-            XCTAssertTrue(result.isHighConfidence, "failed case \(wrong) → \(corrected)")
-            XCTAssertEqual(result.reason, .transliteration)
-        }
-    }
-
-    func testUnrelatedChineseEnglishPairHasLowAffinity() {
-        let result = CorrectionAffinityAnalyzer.evaluate(wrong: "苹果", corrected: "Microsoft")
-
-        XCTAssertFalse(result.isHighConfidence)
-        XCTAssertEqual(result.reason, .unrelated)
-    }
-
-    func testConfirmedMappingOverridesAffinityHeuristics() {
-        let result = CorrectionAffinityAnalyzer.evaluate(
-            wrong: "苹果",
-            corrected: "Microsoft",
-            confirmedMappings: [CorrectionMapping(trigger: "苹果", replacement: "Microsoft")]
-        )
-
-        XCTAssertTrue(result.isHighConfidence)
-        XCTAssertEqual(result.reason, .confirmedMapping)
-    }
-}
-
-private actor MixedScriptAgreeingSegmenter: ChineseWordSegmenting {
-    private var calls = 0
-
-    func tokenSpans(in text: String) -> [ChineseTokenSpan] {
-        calls += 1
-        guard let range = text.range(of: "杰瑞") else { return [] }
-        return [
-            ChineseTokenSpan(range: range, source: .jiebaAccurate),
-            ChineseTokenSpan(range: range, source: .naturalLanguage),
-        ]
-    }
-
-    func callCount() -> Int { calls }
-}
-
-private struct MixedScriptDisagreeingSegmenter: ChineseWordSegmenting {
-    func tokenSpans(in text: String) async -> [ChineseTokenSpan] {
-        guard let range = text.range(of: "杰瑞") else { return [] }
-        return [ChineseTokenSpan(range: range, source: .naturalLanguage)]
-            + text.range(of: "明天").map {
-                [ChineseTokenSpan(range: $0, source: .jiebaAccurate)]
-            }.orEmpty
-    }
-}
-
-private extension Optional where Wrapped == [ChineseTokenSpan] {
-    var orEmpty: [ChineseTokenSpan] { self ?? [] }
 }
 
 final class CorrectionLearningStoreTests: XCTestCase {
@@ -454,17 +293,6 @@ final class CorrectionLearningEligibilityTests: XCTestCase {
             )
             XCTAssertFalse(blocked.shouldTrackInjection)
         }
-    }
-
-    @MainActor
-    func testCancellingWithoutAnObservationDoesNotCreateAnimatedPanel() {
-        let coordinator = CorrectionLearningCoordinator()
-
-        XCTAssertFalse(coordinator.isPanelControllerLoaded)
-
-        coordinator.cancelObservation()
-
-        XCTAssertFalse(coordinator.isPanelControllerLoaded)
     }
 
     @MainActor

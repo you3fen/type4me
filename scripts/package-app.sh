@@ -133,15 +133,6 @@ cp "$PROJECT_DIR/Type4Me/Resources/Assets/"*.svg "$APP_PATH/Contents/Resources/A
 BINARY_DIR="$(dirname "$BINARY")"
 find "$BINARY_DIR" -maxdepth 1 -name "*.bundle" -exec cp -R {} "$APP_PATH/Contents/Resources/" \; 2>/dev/null || true
 
-if [ -f "$PROJECT_DIR/CppJiebaBridge/marker" ]; then
-    mkdir -p "$APP_PATH/Contents/Resources/Jieba"
-    cp "$PROJECT_DIR/Type4Me/Resources/Jieba/dict.txt.small" "$APP_PATH/Contents/Resources/Jieba/"
-    cp "$PROJECT_DIR/Type4Me/Resources/Jieba/hmm_model.utf8" "$APP_PATH/Contents/Resources/Jieba/"
-    cp "$PROJECT_DIR/Type4Me/Resources/Jieba/user.dict.utf8" "$APP_PATH/Contents/Resources/Jieba/"
-    cp "$PROJECT_DIR/CppJiebaBridge/CPPJIEBA_LICENSE" "$APP_PATH/Contents/Resources/Jieba/"
-    cp "$PROJECT_DIR/CppJiebaBridge/JIEBA_LICENSE" "$APP_PATH/Contents/Resources/Jieba/"
-fi
-
 cat >"$INFO_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

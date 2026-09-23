@@ -9,16 +9,12 @@ let hasSherpaFramework = FileManager.default.fileExists(
 let hasCloudSubscription = FileManager.default.fileExists(
     atPath: packageDir + "/Type4Me/CloudSubscription/marker"
 )
-let hasCppJiebaBridge = FileManager.default.fileExists(
-    atPath: packageDir + "/CppJiebaBridge/marker"
-)
 let isPersonalBuild = ProcessInfo.processInfo.environment["TYPE4ME_PERSONAL_BUILD"] == "1"
 let isDevBuild = ProcessInfo.processInfo.environment["TYPE4ME_DEV_BUILD"] == "1"
 
 var swiftDefines: [SwiftSetting] = [.swiftLanguageMode(.v5)]
 if hasSherpaFramework { swiftDefines.append(.define("HAS_SHERPA_ONNX")) }
 if hasCloudSubscription { swiftDefines.append(.define("HAS_CLOUD_SUBSCRIPTION")) }
-if hasCppJiebaBridge { swiftDefines.append(.define("HAS_CPPJIEBA")) }
 if isPersonalBuild { swiftDefines.append(.define("TYPE4ME_PERSONAL_BUILD")) }
 if isDevBuild { swiftDefines.append(.define("TYPE4ME_DEV_BUILD")) }
 
@@ -44,13 +40,12 @@ var targets: [Target] = [
     .executableTarget(
         name: "Type4Me",
         dependencies: ["Type4MeIntelliSenseCore", "Type4MeReviseCore"]
-            + (hasSherpaFramework ? ["SherpaOnnxLib"] : [])
-            + (hasCppJiebaBridge ? ["CppJiebaBridge"] : []),
+            + (hasSherpaFramework ? ["SherpaOnnxLib"] : []),
         path: "Type4Me",
         exclude: excludes,
         cSettings: hasSherpaFramework ? [.headerSearchPath("Bridge")] : [],
         swiftSettings: swiftDefines,
-        linkerSettings: (hasSherpaFramework || hasCppJiebaBridge ? [
+        linkerSettings: (hasSherpaFramework ? [
             .linkedLibrary("c++"),
         ] : []) + (hasSherpaFramework ? [
             .linkedFramework("Accelerate"),
@@ -66,19 +61,6 @@ var targets: [Target] = [
         swiftSettings: swiftDefines
     ),
 ]
-
-if hasCppJiebaBridge {
-    targets.insert(
-        .target(
-            name: "CppJiebaBridge",
-            path: "CppJiebaBridge",
-            exclude: ["CPPJIEBA_LICENSE", "JIEBA_LICENSE", "PROVENANCE.md", "marker"],
-            publicHeadersPath: "include",
-            cxxSettings: [.headerSearchPath("vendor")]
-        ),
-        at: 0
-    )
-}
 
 if hasSherpaFramework {
     targets.insert(

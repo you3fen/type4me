@@ -90,9 +90,9 @@ final class DataBackupManagerTests: XCTestCase {
     func testScopeCoversEveryPersistentUserStore() {
         for name in [
             "history.db", "ask-anything.db", "modes.json", "snippets.json", "hotwords.json",
-            "credentials.json", "correction-references.json", "intelli-sense-settings.json",
+            "credentials.json", "intelli-sense-settings.json",
             "intelli-sense-expression-profile.json", "revise-settings.json",
-            "batch-correction-suggestions-v1.json", "jieba-user-dictionary-v1.utf8",
+            "vocabulary-learning.json",
         ] {
             XCTAssertTrue(DataBackupManager.backedUpFiles.contains(name), "\(name) is user data")
         }

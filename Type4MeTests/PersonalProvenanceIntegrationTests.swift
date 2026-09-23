@@ -5,7 +5,7 @@ import Type4MeIntelliSenseCore
 
 /// Synthetic integration controls. No ASR, network, AX, real profile, or clipboard.
 final class PersonalProvenanceIntegrationTests: XCTestCase {
-    func testFinalDestinationUnifiesSnippetProvenanceAndPersonalReference() async throws {
+    func testFinalDestinationUnifiesSnippetProvenance() async throws {
         let client = ProvenanceLLMClient(output: "文档 中把 Type4Me 切换到 2.5 版本。")
         let output = await switchingCase(client: client, finalHasRule: true)
         let result = try XCTUnwrap(output)
@@ -19,12 +19,10 @@ final class PersonalProvenanceIntegrationTests: XCTestCase {
         ])
         XCTAssertEqual(result.text, "文档 中把 Type4Me 切换到 2.5 版本。")
         XCTAssertTrue(calls.first?.prompt.contains("<personal_vocabulary>") == true)
-        XCTAssertTrue(calls.first?.prompt.contains("<confirmed_spelling_references>") == true)
-        XCTAssertFalse(calls.first?.prompt.contains("OtherBrand") == true)
         XCTAssertTrue(result.trace?.contains("com.example.final") == true)
     }
 
-    func testIntegratedReferenceNeverPermitsVersionChange() async throws {
+    func testIntegratedVocabularyNeverPermitsVersionChange() async throws {
         let client = ProvenanceLLMClient(output: "文档 中把 Type4Me 切换到 2.6 版本。")
         let output = await switchingCase(client: client, finalHasRule: true)
         let result = try XCTUnwrap(output)
@@ -35,7 +33,7 @@ final class PersonalProvenanceIntegrationTests: XCTestCase {
         XCTAssertEqual(calls.count, 1)
     }
 
-    func testSwitchToNoRulesClearsProvenanceWithoutLosingPersonalReference() async throws {
+    func testSwitchToNoRulesClearsProvenance() async throws {
         let client = ProvenanceLLMClient(output: "Doc 中把 Type4Me 切换到 2.5 版本。")
         let output = await switchingCase(client: client, finalHasRule: false)
         let result = try XCTUnwrap(output)
@@ -45,7 +43,6 @@ final class PersonalProvenanceIntegrationTests: XCTestCase {
         XCTAssertEqual(result.text, "Doc 中把 Type4Me 切换到 2.5 版本。")
         let calls = await client.calls()
         XCTAssertEqual(calls.count, 1)
-        XCTAssertTrue(calls.first?.prompt.contains("<confirmed_spelling_references>") == true)
     }
 
     func testSensitiveDestinationOmitsPersonalEvidenceAndDisablesObservation() async throws {
@@ -60,7 +57,6 @@ final class PersonalProvenanceIntegrationTests: XCTestCase {
             startingSnapshot: provenanceSnapshot(provenanceTarget("com.example.start", pid: 8101)),
             settings: provenanceSettings(),
             personalVocabulary: ["SyntheticPrivateTerm"],
-            correctionReferences: [provenanceReference(bundle: destination.bundleIdentifier!)],
             currentTarget: { destination }, capture: { _, _ in snapshot }
         )
         let result = try XCTUnwrap(output)
@@ -71,7 +67,6 @@ final class PersonalProvenanceIntegrationTests: XCTestCase {
         let calls = await client.calls()
         XCTAssertEqual(calls.count, 1)
         XCTAssertFalse(calls.first?.prompt.contains("SyntheticPrivateTerm") == true)
-        XCTAssertFalse(calls.first?.prompt.contains("<confirmed_spelling_references>") == true)
     }
 
     func testLateReceiverSwitchKeepsProcessingEvidenceAndOneRequest() async throws {
@@ -85,7 +80,6 @@ final class PersonalProvenanceIntegrationTests: XCTestCase {
             text: "把 Tell me 切换到 2.5 版本。",
             startingSnapshot: provenanceSnapshot(provenanceTarget("com.example.start", pid: 8201)),
             settings: provenanceSettings(), personalVocabulary: ["Type4Me"],
-            correctionReferences: [provenanceReference(bundle: processing.bundleIdentifier!)],
             currentTarget: { current.value() }, capture: { target, _ in provenanceSnapshot(target) }
         )
         let result = try XCTUnwrap(output)
@@ -145,7 +139,7 @@ final class PersonalProvenanceIntegrationTests: XCTestCase {
         XCTAssertEqual(DataBackupManager.backupRoot.lastPathComponent, "Type4MeTests Backups")
     }
 
-    func testBackupPreservesReferencesAndNeverIncludesSiblingProfile() throws {
+    func testBackupPreservesHotwordsAndNeverIncludesSiblingProfile() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let personal = directory.appendingPathComponent("Type4Me Personal", isDirectory: true)
@@ -154,13 +148,13 @@ final class PersonalProvenanceIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(at: sibling, withIntermediateDirectories: true)
         let sentinel = sibling.appendingPathComponent("credentials.json")
         try Data("synthetic-sibling-do-not-import".utf8).write(to: sentinel)
-        let reference = provenanceReference(bundle: "com.example.final")
-        try CorrectionReferenceStorage.save([reference], to: personal.appendingPathComponent("correction-references.json"))
+        try FileManager.default.createDirectory(at: personal, withIntermediateDirectories: true)
+        let hotwords = Data(#"["Type4Me"]"#.utf8)
+        try hotwords.write(to: personal.appendingPathComponent("hotwords.json"))
         let snapshot = try XCTUnwrap(try DataBackupManager.snapshot(
             now: Date(timeIntervalSince1970: 1_800_000_000), from: personal, root: backups
         ))
-        let restored = try CorrectionReferenceStorage.load(from: snapshot.appendingPathComponent("correction-references.json"))
-        XCTAssertEqual(restored, [reference])
+        XCTAssertEqual(try Data(contentsOf: snapshot.appendingPathComponent("hotwords.json")), hotwords)
         XCTAssertFalse(FileManager.default.fileExists(atPath: snapshot.appendingPathComponent("credentials.json").path))
         XCTAssertEqual(try Data(contentsOf: sentinel), Data("synthetic-sibling-do-not-import".utf8))
     }
@@ -175,10 +169,6 @@ final class PersonalProvenanceIntegrationTests: XCTestCase {
             text: "Doc 中把 Tell me 切换到 2.5 版本。",
             startingSnapshot: provenanceSnapshot(provenanceTarget("com.example.start", pid: 8001)),
             settings: provenanceSettings(), personalVocabulary: ["Type4Me"],
-            correctionReferences: [
-                provenanceReference(bundle: processing.bundleIdentifier!, canonical: "OtherBrand"),
-                provenanceReference(bundle: destination.bundleIdentifier!)
-            ],
             applySnippets: { text, bundle in
                 let rules: [(trigger: String, value: String)]
                 if bundle == processing.bundleIdentifier { rules = [("Doc", "Docker")] }
@@ -195,10 +185,6 @@ final class PersonalProvenanceIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
-}
-
-private func provenanceReference(bundle: String, canonical: String = "Type4Me") -> VocabularyCorrectionReference {
-    VocabularyCorrectionReference(wrongText: "Tell me", correctedText: canonical, bundleIdentifier: bundle, sourceRecordID: "synthetic-reference", confirmedAt: Date(timeIntervalSince1970: 1_700_000_000))
 }
 
 private func provenanceTarget(_ bundle: String, pid: pid_t) -> TargetApplicationContext {
