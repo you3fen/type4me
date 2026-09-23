@@ -5,25 +5,20 @@ import NaturalLanguage
 /// accent: the pinyin of a same-length window equals the term's pinyin once
 /// an/ang, en/eng, in/ing finals, z/zh, c/ch, s/sh initials and n/l are folded.
 ///
-/// Only windows that start and end on word boundaries count, so "模型吗" never
-/// yields "型吗". Terms of three or more characters are replaced when the window
-/// is not itself a single dictionary word; everything else is only a hint for
-/// the LLM, because two-character homophones such as "会花" are often real words.
+/// Only terms of three or more characters are matched, only on windows that
+/// start and end on word boundaries ("模型吗" never yields "型吗"), and never when
+/// the window is itself a single dictionary word. Two-character homophones such
+/// as "会花" / "会话" are real words too often to rewrite, and hinting them to the
+/// LLM made it rewrite "会花多少钱".
 public enum PhoneticVocabularyMatcher {
-    public enum Tier: String, Sendable, Equatable {
-        case replace
-        case hint
-    }
-
     public struct Match: Sendable, Equatable {
         public let window: String
         public let term: String
-        public let tier: Tier
         /// Character offsets into the input text.
         public let range: Range<Int>
     }
 
-    public static let minimumReplaceLength = 3
+    public static let minimumTermLength = 3
 
     public static func matches(in text: String, vocabulary: [String]) -> [Match] {
         let terms = candidateTerms(vocabulary)
@@ -39,7 +34,7 @@ public enum PhoneticVocabularyMatcher {
         // Longer terms first so "阶跃星辰" wins over a shorter overlapping term.
         for (term, termKey) in terms.sorted(by: { $0.term.count > $1.term.count }) {
             let n = termKey.count
-            guard chars.count >= n else { continue }
+            guard n >= minimumTermLength, chars.count >= n else { continue }
             for i in 0...(chars.count - n) {
                 let range = i..<(i + n)
                 guard starts.contains(i), ends.contains(i + n),
@@ -51,22 +46,20 @@ public enum PhoneticVocabularyMatcher {
                 }
                 guard equal else { continue }
                 let window = String(chars[range])
-                guard window != term else { continue }
-                let isSingleWord = singleWords.contains("\(i):\(i + n)")
-                let tier: Tier = (n >= minimumReplaceLength && !isSingleWord) ? .replace : .hint
-                result.append(Match(window: window, term: term, tier: tier, range: range))
+                guard window != term, !singleWords.contains("\(i):\(i + n)") else { continue }
+                result.append(Match(window: window, term: term, range: range))
                 claimed.insert(integersIn: range)
             }
         }
         return result.sorted { $0.range.lowerBound < $1.range.lowerBound }
     }
 
-    /// Applies only `.replace` matches. Returns the rewritten text and the
-    /// distinct window → term pairs that fired, in text order.
+    /// Returns the rewritten text and the distinct window → term pairs that
+    /// fired, in text order.
     public static func applyReplacements(
         to text: String, vocabulary: [String]
     ) -> (text: String, applied: [(window: String, term: String)]) {
-        let replacements = matches(in: text, vocabulary: vocabulary).filter { $0.tier == .replace }
+        let replacements = matches(in: text, vocabulary: vocabulary)
         guard !replacements.isEmpty else { return (text, []) }
         var chars = Array(text)
         for match in replacements.reversed() {
