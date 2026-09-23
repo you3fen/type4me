@@ -317,12 +317,23 @@ public enum IntelliSenseOutputValidator {
                 && !vocabularyTerms.contains(where: { $0.caseInsensitiveCompare(token) == .orderedSame })
         }
         guard !additions.isEmpty else { return false }
+        // "GPT 6" → "GPT-6" only re-spells a number the speaker said; a token is
+        // invented when it carries a number the input never contained.
+        let inputNumbers = Set(inputTokens.flatMap(numbers(in:)))
+        let inventedAdditions = additions.filter { !Set(numbers(in: $0)).isSubset(of: inputNumbers) }
         // New Arabic facts are hard errors when the source already contained
         // protected facts. For ASR-shaped Chinese-number normalization, emit no
         // hard rejection because the source may not contain an Arabic token.
-        return !inputTokens.isEmpty && additions.contains { token in
+        return !inputTokens.isEmpty && inventedAdditions.contains { token in
             token.rangeOfCharacter(from: .decimalDigits) != nil
                 && !appearsOnlyAsListMarker(token, in: output)
+        }
+    }
+
+    private static func numbers(in token: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"\d+(?:\.\d+)*"#) else { return [] }
+        return regex.matches(in: token, range: NSRange(token.startIndex..., in: token)).compactMap {
+            Range($0.range, in: token).map { String(token[$0]) }
         }
     }
 

@@ -533,6 +533,18 @@ final class IntelliSenseOutputGuardTests: XCTestCase {
         XCTAssertEqual(result.finalText, output)
     }
 
+    func testRespellingASpokenNumberIsNotAnInventedFact() {
+        // Real dictation: "GPT 6的模型" polished to "GPT-6 的模型" was rejected.
+        let respelled = IntelliSenseOutputValidator.evaluate(
+            input: "这是为 GPT 6的模型写的，版本 2.5。", output: "这是为 GPT-6 的模型写的，版本 2.5。"
+        )
+        if case .reject = respelled { XCTFail("GPT-6 only re-spells the spoken 6") }
+        let changed = IntelliSenseOutputValidator.evaluate(
+            input: "这是为 GPT 6的模型写的，版本 2.5。", output: "这是为 GPT-7 的模型写的，版本 2.5。"
+        )
+        guard case .reject = changed else { return XCTFail("GPT-7 changes the spoken number") }
+    }
+
     func testBaInstructionKeepsBothValuesButRealRetractionMayDropTheOldOne() {
         // Real dictation: "把325改成3.25" came back as "把 3.25 改成 3.25".
         let instruction = IntelliSenseOutputValidator.evaluate(input: "把325改成3.25。", output: "把 3.25 改成 3.25。")
