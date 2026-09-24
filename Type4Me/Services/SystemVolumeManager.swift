@@ -22,6 +22,12 @@ enum SystemVolumeManager {
     /// UserDefaults key for crash recovery.
     private static let savedVolumeKey = "tf_savedSystemVolume"
 
+    /// Whether Type4Me turned on the output device's mute switch, protected for cross-thread access.
+    private static let mutedByUs = OSAllocatedUnfairLock<Bool>(initialState: false)
+
+    /// UserDefaults key for crash recovery of a mute Type4Me applied.
+    private static let mutedByUsKey = "tf_systemMutedByType4Me"
+
     /// `UserDefaults.integer(forKey:)` returns zero for a missing key, which
     /// accidentally mutes fresh installs. Missing means the documented default:
     /// do not lower playback volume.
@@ -38,6 +44,20 @@ enum SystemVolumeManager {
     static func lower(to fraction: Float) {
         queue.async {
             guard let deviceID = defaultOutputDevice() else { return }
+
+            // Volume scalar 0 is only the device's minimum gain (-63.5 dB on
+            // MacBook speakers), so loud playback stays faintly audible.
+            // Use the device's mute switch when the user chose silence.
+            if fraction <= 0, let muted = isMuted(device: deviceID), canSetMute(device: deviceID) {
+                guard !muted else { return }
+                if setMute(device: deviceID, muted: true) {
+                    mutedByUs.withLock { $0 = true }
+                    UserDefaults.standard.set(true, forKey: mutedByUsKey)
+                    logger.info("Output muted")
+                    return
+                }
+            }
+
             guard let current = getVolume(device: deviceID) else { return }
 
             // Don't lower if already very quiet
@@ -54,6 +74,19 @@ enum SystemVolumeManager {
     /// Restore volume to the level saved before lowering.
     static func restore() {
         queue.async {
+            let wasMutedByUs = mutedByUs.withLock { value in
+                let v = value
+                value = false
+                return v
+            }
+            if wasMutedByUs {
+                UserDefaults.standard.removeObject(forKey: mutedByUsKey)
+                if let deviceID = defaultOutputDevice() {
+                    setMute(device: deviceID, muted: false)
+                    logger.info("Output unmuted")
+                }
+            }
+
             let saved: Float? = savedVolume.withLock { value in
                 let v = value
                 value = nil
@@ -71,6 +104,14 @@ enum SystemVolumeManager {
     /// Restore volume from a previous session if the app crashed while volume was lowered.
     /// Call once at app launch. Runs synchronously — safe because it's before UI shows.
     static func restoreIfNeeded() {
+        if UserDefaults.standard.bool(forKey: mutedByUsKey) {
+            UserDefaults.standard.removeObject(forKey: mutedByUsKey)
+            if let deviceID = defaultOutputDevice() {
+                setMute(device: deviceID, muted: false)
+                logger.info("Crash recovery: output unmuted")
+            }
+        }
+
         let saved = UserDefaults.standard.float(forKey: savedVolumeKey)
         guard saved > 0 else { return }
         UserDefaults.standard.removeObject(forKey: savedVolumeKey)
@@ -168,6 +209,37 @@ enum SystemVolumeManager {
             mElement: kAudioObjectPropertyElementMain
         )
         AudioObjectSetPropertyData(device, &address, 0, nil, UInt32(MemoryLayout<Float32>.size), &vol)
+    }
+
+    private static let muteAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyMute,
+        mScope: kAudioDevicePropertyScopeOutput,
+        mElement: kAudioObjectPropertyElementMain
+    )
+
+    private static func isMuted(device: AudioDeviceID) -> Bool? {
+        var address = muteAddress
+        guard AudioObjectHasProperty(device, &address) else { return nil }
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value)
+        guard status == noErr else { return nil }
+        return value != 0
+    }
+
+    private static func canSetMute(device: AudioDeviceID) -> Bool {
+        var address = muteAddress
+        var settable: DarwinBoolean = false
+        let status = AudioObjectIsPropertySettable(device, &address, &settable)
+        return status == noErr && settable.boolValue
+    }
+
+    @discardableResult
+    private static func setMute(device: AudioDeviceID, muted: Bool) -> Bool {
+        var address = muteAddress
+        var value: UInt32 = muted ? 1 : 0
+        let status = AudioObjectSetPropertyData(device, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value)
+        return status == noErr
     }
 
     private static func deviceName(_ deviceID: AudioDeviceID) -> String? {
