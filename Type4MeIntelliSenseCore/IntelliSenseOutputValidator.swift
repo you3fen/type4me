@@ -107,7 +107,8 @@ public enum IntelliSenseOutputValidator {
 
         for token in analysis.requiredProtectedTokens
         where ProtectedFactExtractor.isHardProtectedToken(token)
-            && !contains(token: token, in: trimmed) {
+            && !contains(token: token, in: trimmed)
+            && !joinsSpokenUnit(token, input: input, output: trimmed) {
             return .reject(.protectedTokenChanged)
         }
         let outputNegations = CorrectionIntentAnalysis.analyze(trimmed).semanticNegationCounts
@@ -162,6 +163,18 @@ public enum IntelliSenseOutputValidator {
     private static func contains(token: String, in text: String) -> Bool {
         let pattern = "(?<![A-Za-z0-9])" + NSRegularExpression.escapedPattern(for: token) + "(?![A-Za-z0-9])"
         return text.range(of: pattern, options: [.regularExpression, .caseInsensitive, .diacriticInsensitive]) != nil
+    }
+
+    /// "4 K" written as "4K": the number survives, joined to the unit the speaker said.
+    private static func joinsSpokenUnit(_ token: String, input: String, output: String) -> Bool {
+        let escaped = NSRegularExpression.escapedPattern(for: token)
+        guard let spoken = try? NSRegularExpression(
+            pattern: "(?<![A-Za-z0-9])" + escaped + #"\s+([A-Za-z]{1,3})(?![A-Za-z0-9])"#
+        ) else { return false }
+        return spoken.matches(in: input, range: NSRange(input.startIndex..., in: input)).contains { match in
+            guard let unit = Range(match.range(at: 1), in: input) else { return false }
+            return contains(token: token + input[unit], in: output)
+        }
     }
 
     private static func compatibleNegationRelations(
@@ -319,7 +332,7 @@ public enum IntelliSenseOutputValidator {
         guard !additions.isEmpty else { return false }
         // "GPT 6" → "GPT-6" only re-spells a number the speaker said; a token is
         // invented when it carries a number the input never contained.
-        let inputNumbers = Set(inputTokens.flatMap(numbers(in:)))
+        let inputNumbers = spokenNumbers(in: input).union(inputTokens.flatMap(numbers(in:)))
         let inventedAdditions = additions.filter { !Set(numbers(in: $0)).isSubset(of: inputNumbers) }
         // New Arabic facts are hard errors when the source already contained
         // protected facts. For ASR-shaped Chinese-number normalization, emit no
@@ -335,6 +348,86 @@ public enum IntelliSenseOutputValidator {
         return regex.matches(in: token, range: NSRange(token.startIndex..., in: token)).compactMap {
             Range($0.range, in: token).map { String(token[$0]) }
         }
+    }
+
+    /// Every number the speaker said, in any spelling the polish may normalize to:
+    /// digits glued to letters ("6GPT6", "Fib5.1"), one number split by ASR
+    /// punctuation ("742。2", "26、901、512、31"), and Chinese numerals
+    /// ("九点" → 9, "百分之四十" → 40, "十点半" → 10 and 30).
+    private static func spokenNumbers(in text: String) -> Set<String> {
+        var result = Set(numbers(in: text))
+        if text.range(of: #"\d\s*点半"#, options: .regularExpression) != nil { result.insert("30") }
+        if let run = try? NSRegularExpression(pattern: #"\d+(?:[ \t。．.、，,]{1,2}\d+)+"#) {
+            for match in run.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                guard let range = Range(match.range, in: text) else { continue }
+                let parts = numbers(in: String(text[range]).replacingOccurrences(of: ".", with: " "))
+                for start in parts.indices {
+                    for end in parts.indices where end > start {
+                        result.insert(parts[start...end].joined(separator: "."))
+                    }
+                }
+            }
+        }
+        return result.union(chineseNumerals(in: text))
+    }
+
+    private static let chineseDigits: [Character: Int] = [
+        "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+        "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+    ]
+    private static let chineseUnits: [Character: Int] = ["十": 10, "百": 100, "千": 1000, "万": 10000]
+
+    private static func chineseNumerals(in text: String) -> Set<String> {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"([零〇一二两三四五六七八九十百千万]+)((?:点[零〇一二两三四五六七八九]+)*)(点半)?"#
+        ) else { return [] }
+        var result = Set<String>()
+        for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let integerRange = Range(match.range(at: 1), in: text) else { continue }
+            let integer = Array(text[integerRange])
+            let fractions = Range(match.range(at: 2), in: text)
+                .map { text[$0].split(separator: "点").map { $0.compactMap { chineseDigits[$0] }.map(String.init).joined() } }
+                ?? []
+            // Every suffix, so a stutter such as "二二百五十" still yields 250.
+            for start in integer.indices {
+                guard let value = chineseInteger(Array(integer[start...])) else { continue }
+                result.insert(value)
+                if !fractions.isEmpty {
+                    result.formUnion(fractions)
+                    for end in fractions.indices {
+                        result.insert(([value] + fractions[...end]).joined(separator: "."))
+                    }
+                }
+                if match.range(at: 3).location != NSNotFound {
+                    result.formUnion(["30", value + ".5"])
+                }
+            }
+        }
+        return result
+    }
+
+    /// "二十六" → "26"; unit-less readings keep their digits: "二六" → "26", "零一" → "01".
+    private static func chineseInteger(_ characters: [Character]) -> String? {
+        guard !characters.isEmpty else { return nil }
+        if !characters.contains(where: { chineseUnits[$0] != nil }) {
+            let digits = characters.compactMap { chineseDigits[$0] }
+            return digits.count == characters.count ? digits.map(String.init).joined() : nil
+        }
+        var total = 0, section = 0, digit: Int?
+        for character in characters {
+            if let value = chineseDigits[character] {
+                digit = value
+            } else if let unit = chineseUnits[character] {
+                if unit == 10_000 {
+                    total += (section + (digit ?? 0)) * unit
+                    section = 0
+                } else {
+                    section += (digit ?? 1) * unit
+                }
+                digit = nil
+            }
+        }
+        return String(total + section + (digit ?? 0))
     }
 
     /// Capitalization must not let a new brand/version bypass numeric-fact checks.

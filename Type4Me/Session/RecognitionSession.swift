@@ -3165,7 +3165,9 @@ actor RecognitionSession {
             input: input,
             candidate: output,
             context: intelliSenseRequestContext?.snapshot,
-            vocabulary: personalVocabularySnapshot ?? HotwordStorage.load()
+            // A snippet target such as "Type4Me" is the user's own spelling too.
+            vocabulary: (personalVocabularySnapshot ?? HotwordStorage.load())
+                + SnippetStorage.load().map(\.value)
         )
         intelliSenseLastProcessingResult = result
         DebugFileLogger.log(

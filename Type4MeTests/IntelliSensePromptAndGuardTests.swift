@@ -558,6 +558,75 @@ final class IntelliSenseOutputGuardTests: XCTestCase {
         )
         if case .reject = retraction { XCTFail("a real spoken retraction may drop the old time") }
     }
+
+    func testBieInsideAWordIsNotAProhibition() {
+        // Real dictation: dropping one repeated "识别" rejected the whole polish.
+        let polished = IntelliSenseOutputValidator.evaluate(
+            input: "它始终无法正确的识别，总是不能正确的识别，特别是这两个字。",
+            output: "它始终无法正确识别，特别是这两个字。"
+        )
+        if case .reject = polished { XCTFail("识别/特别 are words, not 别") }
+        XCTAssertEqual(IntelliSenseOutputValidator.evaluate(input: "你别动这个文件。", output: "你动这个文件。"),
+                       .reject(.negationChanged))
+    }
+
+    func testStutteredProhibitionCountsOnce() {
+        let polished = IntelliSenseOutputValidator.evaluate(input: "我已经让他不要不要弄了。", output: "我已经让他不要弄了。")
+        if case .reject = polished { XCTFail("不要不要 is one prohibition") }
+        let english = IntelliSenseOutputValidator.evaluate(input: "然后选择 don't don't work。", output: "然后选择 don't work。")
+        if case .reject = english { XCTFail("don't don't is one prohibition") }
+        XCTAssertEqual(IntelliSenseOutputValidator.evaluate(input: "我已经让他不要不要弄了。", output: "我已经让他弄了。"),
+                       .reject(.negationChanged))
+    }
+
+    func testFractionsInChineseTextAreNotPaths() {
+        let polished = IntelliSenseOutputValidator.evaluate(
+            input: "消耗减少到原来的1/3或者1/14。结果现在你告诉我。",
+            output: "消耗减少到原来的 1/3 或者 1/14。结果现在你告诉我。"
+        )
+        if case .reject = polished { XCTFail("1/3 or 1/14 followed by Chinese is not a path") }
+        XCTAssertEqual(IntelliSenseOutputValidator.evaluate(input: "放到 /usr/local/bin 里。", output: "放到 /usr/bin 里。"),
+                       .reject(.protectedTokenChanged))
+    }
+
+    func testSpokenNumbersWrittenAsDigitsAreNotInventedFacts() {
+        let input = "那个要3秒，这个只要一秒钟，九点钟睡，三点钟醒，占用百分之四十，十点半重置，二二百五十美元。"
+        let polished = IntelliSenseOutputValidator.evaluate(
+            input: input,
+            output: "那个要 3 秒，这个只要 1 秒钟，9 点钟睡，3 点钟醒，占用 40%，10:30 重置，250 美元。"
+        )
+        if case .reject = polished { XCTFail("every digit was spoken as a Chinese numeral") }
+        XCTAssertEqual(
+            IntelliSenseOutputValidator.evaluate(input: input, output: "那个要 3 秒，这个只要 2 秒钟，9 点钟睡。"),
+            .reject(.inventedProtectedFact)
+        )
+        // ASR splits one number at punctuation: "742。2", "26、901、512、31".
+        let split = IntelliSenseOutputValidator.evaluate(
+            input: "左下角的这个742。2这样的一个数字，版本是26、901、512、31。",
+            output: "左下角的 742.2 这个数字，版本是 26.901.512.31。"
+        )
+        if case .reject = split { XCTFail("742.2 joins the two spoken parts") }
+        let changed = IntelliSenseOutputValidator.evaluate(
+            input: "左下角的这个742。2这样的一个数字。", output: "左下角的 742.3 这个数字。"
+        )
+        guard case .reject = changed else { return XCTFail("742.3 is not what was spoken") }
+    }
+
+    func testRetractionAfterAnAcronymDropsTheSpokenNumber() {
+        // Real dictation: "APP" was treated as the retracted token instead of 4:25.
+        let retraction = IntelliSenseOutputValidator.evaluate(
+            input: "在 ForMe APP 里面4:25，不对，应该是4:24的时候，我说了一段447.7秒的音频。",
+            output: "在 ForMe APP 里面 4:24 的时候，我说了一段 447.7 秒的音频。"
+        )
+        if case .reject = retraction { XCTFail("4:25 was retracted in favour of 4:24") }
+    }
+
+    func testNumberJoinedToItsSpokenUnitSurvives() {
+        let joined = IntelliSenseOutputValidator.evaluate(input: "抖音的一个4 K 的视频不会卡。", output: "抖音的一个 4K 视频不会卡。")
+        if case .reject = joined { XCTFail("4 K written as 4K keeps the number") }
+        XCTAssertEqual(IntelliSenseOutputValidator.evaluate(input: "抖音的一个4 K 的视频不会卡。", output: "抖音的一个 8K 视频不会卡。"),
+                       .reject(.protectedTokenChanged))
+    }
 }
 
 final class ListStructureIntentAnalyzerTests: XCTestCase {

@@ -20,7 +20,10 @@ public struct CorrectionIntentAnalysis: Equatable, Codable, Sendable {
 
     public static func analyze(_ text: String) -> Self {
         let ranges = explicitCorrectionRanges(in: text)
+        // Matches arrive grouped by pattern; "before.last" must be the token the
+        // speaker said last, not the last soft token such as "APP".
         let tokens = ProtectedFactExtractor.tokensWithRanges(in: text)
+            .sorted { $0.range.lowerBound < $1.range.lowerBound }
         var superseded = Set<String>()
         var required = Set(tokens.map(\.token))
 
@@ -73,7 +76,13 @@ public struct CorrectionIntentAnalysis: Equatable, Codable, Sendable {
     }
 
     private static func semanticNegations(in text: String) -> [String: Int] {
-        var semantic = text
+        // A stuttered "不要不要" / "don't don't" is one prohibition; collapse it
+        // first, otherwise "不要不要" also loses its middle "要不要" below.
+        var semantic = text.replacingOccurrences(
+            of: #"(?i)(不要|别|don't|do\s+not)(?:[\s，,、]*\1)+"#,
+            with: "$1",
+            options: .regularExpression
+        )
         let metaPatterns = [
             #"(?i)不对|哦不|i\s+mean|sorry"#,
             #"(?i)能不能|可不可以|是不是|要不要|有没有|是否"#,
@@ -83,7 +92,8 @@ public struct CorrectionIntentAnalysis: Equatable, Codable, Sendable {
             semantic = semantic.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
         }
         let groups: [(String, String)] = [
-            ("prohibition", #"(?i)不要|别|请勿|不得|do\s+not|don't|must\s+not"#),
+            // 别 inside 识别/特别/分别/别人/别处 is a word, not "don't".
+            ("prohibition", #"(?i)不要|(?<![特识区分类级差个辨鉴告离派性判甄道惜送诀作临])别(?![人处家名称样致号墅针字的])|请勿|不得|do\s+not|don't|must\s+not"#),
             ("inability", #"(?i)不能|无法|不可|can't|cannot"#),
             ("absence", #"(?i)尚未|没有|未|没|not\s+yet|didn't|hasn't|haven't"#),
             ("contradiction", #"(?i)并非|不是|\bnot\b|\bno\b"#),
@@ -112,7 +122,8 @@ enum ProtectedFactExtractor {
     private static let hardPatterns = [
         #"https?://[^\s<>]+"#,
         #"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"#,
-        #"(?:/[^\s/]+){2,}"#,
+        // Path segments never contain CJK text, so "1/3或者1/14。…" is not a path.
+        #"(?:/[^\s/\u3000-\u303F\u4E00-\u9FFF\uFF00-\uFFEF]+){2,}"#,
         #"(?<![A-Za-z0-9])\d+(?:[.,:/-]\d+)*(?![A-Za-z0-9])"#,
         #"(?:周|星期|礼拜)[一二三四五六日天]"#,
     ]
