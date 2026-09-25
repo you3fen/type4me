@@ -155,7 +155,7 @@ final class TextInjectionEngine: @unchecked Sendable {
         }
         usleep(100_000)
 
-        let after = trackingMetadata != nil ? captureFocusedElementSnapshot(isPrePaste: false) : nil
+        var after = trackingMetadata != nil ? captureFocusedElementSnapshot(isPrePaste: false) : nil
         let outcome: InjectionOutcome = .inserted
 
         if let savedClipboard {
@@ -166,7 +166,10 @@ final class TextInjectionEngine: @unchecked Sendable {
             pendingClipboardRestore = nil
         }
 
-        let context = trackingMetadata.flatMap { metadata in
+        guard let metadata = trackingMetadata else {
+            return TrackedInjectionResult(outcome: outcome, observationContext: nil)
+        }
+        func observationContext() -> CorrectionObservationContext? {
             makeObservationContext(
                 before: before,
                 after: after,
@@ -177,16 +180,78 @@ final class TextInjectionEngine: @unchecked Sendable {
                 outcome: outcome
             )
         }
-        if trackingMetadata != nil, context == nil {
-            // The pasted text could not be located in a focused editable field
-            // (focus moved, or the field is not readable), so delivery is
-            // unproven. Keep the text on the clipboard instead of restoring.
-            copyToClipboard(text, transient: false)
-            pendingClipboardRestore = nil
-            DebugFileLogger.log("injection unverified: pasted text not found in focused field; kept on clipboard")
-            return TrackedInjectionResult(outcome: .pasteAttemptedClipboardRetained, observationContext: nil)
+
+        // Electron editors can take a few hundred milliseconds to expose a long
+        // paste through Accessibility; look again before judging it undelivered.
+        var unprovenReason = ""
+        for attempt in 0...2 {
+            if attempt > 0 {
+                usleep(150_000)
+                after = captureFocusedElementSnapshot(isPrePaste: false)
+            }
+            if let context = observationContext() {
+                return TrackedInjectionResult(outcome: outcome, observationContext: context)
+            }
+            let assessment = Self.assessUnlocatedPaste(before: before, after: after, pastedText: text)
+            if assessment.landed {
+                // Delivered, but not at an exact range (the editor reformatted
+                // whitespace, or its value is unreadable): skip edit observation.
+                DebugFileLogger.log("injection delivered without observation reason=\(assessment.reason)")
+                return TrackedInjectionResult(outcome: outcome, observationContext: nil)
+            }
+            unprovenReason = assessment.reason
         }
-        return TrackedInjectionResult(outcome: outcome, observationContext: context)
+        // Focus left the editable field, or the readable field does not contain
+        // the pasted text, so delivery is unproven. Keep the text on the
+        // clipboard instead of restoring.
+        copyToClipboard(text, transient: false)
+        pendingClipboardRestore = nil
+        DebugFileLogger.log("injection unverified: reason=\(unprovenReason); kept on clipboard")
+        return TrackedInjectionResult(outcome: .pasteAttemptedClipboardRetained, observationContext: nil)
+    }
+
+    /// Judges a paste whose exact inserted range could not be located.
+    ///
+    /// Only evidence that the paste went nowhere counts against delivery: no
+    /// focused editable element, focus moving to another element, or a readable
+    /// value that does not contain the pasted text. Whitespace is ignored when
+    /// matching, because rich editors turn blank lines into paragraphs.
+    static func assessUnlocatedPaste(
+        before: FocusedElementSnapshot?,
+        after: FocusedElementSnapshot?,
+        pastedText: String
+    ) -> (landed: Bool, reason: String) {
+        guard let after, after.hasFocusedElement, after.isEditable else {
+            return (false, "noEditableFocus")
+        }
+        if let before, before.hasFocusedElement,
+           let beforeElement = before.element,
+           let afterElement = after.element,
+           !CFEqual(beforeElement, afterElement) {
+            return (false, "focusMoved")
+        }
+        guard let afterValue = after.value else {
+            return (true, "valueUnreadable")
+        }
+        let pasted = compactForPasteMatching(pastedText)
+        let current = compactForPasteMatching(afterValue)
+        guard !pasted.isEmpty, current.contains(pasted) else {
+            return (false, "textNotFound")
+        }
+        if let beforeValue = before?.value {
+            let previous = compactForPasteMatching(beforeValue)
+            if previous.contains(pasted), current.count - previous.count < pasted.count {
+                return (false, "textNotFound")
+            }
+        }
+        return (true, "whitespaceNormalizedMatch")
+    }
+
+    private static func compactForPasteMatching(_ text: String) -> String {
+        String(text.unicodeScalars.filter {
+            !CharacterSet.whitespacesAndNewlines.contains($0)
+                && $0 != "\u{200B}" && $0 != "\u{FEFF}"
+        }.map(Character.init))
     }
 
     static func shouldRestoreClipboard(retention: ClipboardRetention) -> Bool {
