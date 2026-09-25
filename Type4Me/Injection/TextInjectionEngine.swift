@@ -139,8 +139,11 @@ final class TextInjectionEngine: @unchecked Sendable {
             return TrackedInjectionResult(outcome: .copiedToClipboard, observationContext: nil)
         }
 
-        let before = trackingMetadata != nil ? captureFocusedElementSnapshot(isPrePaste: true) : nil
-
+        // Every paste whose clipboard would be restored afterwards is checked:
+        // restoring after a paste that went nowhere leaves the dictation only
+        // in history.
+        let verifiesDelivery = trackingMetadata != nil || shouldRestoreClipboard
+        let before = verifiesDelivery ? captureFocusedElementSnapshot(isPrePaste: true) : nil
 
         copyToClipboard(text, transient: shouldRestoreClipboard)
         let postWriteChangeCount = NSPasteboard.general.changeCount
@@ -155,7 +158,7 @@ final class TextInjectionEngine: @unchecked Sendable {
         }
         usleep(100_000)
 
-        var after = trackingMetadata != nil ? captureFocusedElementSnapshot(isPrePaste: false) : nil
+        var after = verifiesDelivery ? captureFocusedElementSnapshot(isPrePaste: false) : nil
         let outcome: InjectionOutcome = .inserted
 
         if let savedClipboard {
@@ -166,11 +169,12 @@ final class TextInjectionEngine: @unchecked Sendable {
             pendingClipboardRestore = nil
         }
 
-        guard let metadata = trackingMetadata else {
+        guard verifiesDelivery else {
             return TrackedInjectionResult(outcome: outcome, observationContext: nil)
         }
         func observationContext() -> CorrectionObservationContext? {
-            makeObservationContext(
+            guard let metadata = trackingMetadata else { return nil }
+            return makeObservationContext(
                 before: before,
                 after: after,
                 pastedText: text,
@@ -194,15 +198,17 @@ final class TextInjectionEngine: @unchecked Sendable {
             }
             let assessment = Self.assessUnlocatedPaste(before: before, after: after, pastedText: text)
             if assessment.landed {
-                // Delivered, but not at an exact range (the editor reformatted
-                // whitespace, or its value is unreadable): skip edit observation.
-                DebugFileLogger.log("injection delivered without observation reason=\(assessment.reason)")
+                if trackingMetadata != nil {
+                    // Delivered, but the editor reformatted whitespace, so there
+                    // is no exact range to observe for edits.
+                    DebugFileLogger.log("injection delivered without observation reason=\(assessment.reason)")
+                }
                 return TrackedInjectionResult(outcome: outcome, observationContext: nil)
             }
             unprovenReason = assessment.reason
         }
-        // Focus left the editable field, or the readable field does not contain
-        // the pasted text, so delivery is unproven. Keep the text on the
+        // Focus left the editable field, the field cannot be read, or it does
+        // not contain the pasted text, so delivery is unproven. Keep the text on the
         // clipboard instead of restoring.
         copyToClipboard(text, transient: false)
         pendingClipboardRestore = nil
@@ -212,10 +218,10 @@ final class TextInjectionEngine: @unchecked Sendable {
 
     /// Judges a paste whose exact inserted range could not be located.
     ///
-    /// Only evidence that the paste went nowhere counts against delivery: no
-    /// focused editable element, focus moving to another element, or a readable
-    /// value that does not contain the pasted text. Whitespace is ignored when
-    /// matching, because rich editors turn blank lines into paragraphs.
+    /// Delivery counts only when the focused editable element that received
+    /// Cmd+V now contains the pasted text. Whitespace is ignored when matching,
+    /// because rich editors turn blank lines into paragraphs. An unreadable
+    /// field proves nothing, so it stays unproven.
     static func assessUnlocatedPaste(
         before: FocusedElementSnapshot?,
         after: FocusedElementSnapshot?,
@@ -231,7 +237,7 @@ final class TextInjectionEngine: @unchecked Sendable {
             return (false, "focusMoved")
         }
         guard let afterValue = after.value else {
-            return (true, "valueUnreadable")
+            return (false, "valueUnreadable")
         }
         let pasted = compactForPasteMatching(pastedText)
         let current = compactForPasteMatching(afterValue)

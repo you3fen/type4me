@@ -63,12 +63,24 @@ final class TextInjectionOutcomeTests: XCTestCase {
         XCTAssertTrue(result.landed)
     }
 
-    func testUnreadableFieldWithoutPrePasteSnapshotCountsAsDelivered() {
-        // WeChat-style: the pre-paste focus query fails and the field value is
-        // not exposed, but an editable field still holds focus after Cmd+V.
+    func testUnreadableFieldIsUnproven() {
+        // Focus alone does not prove Cmd+V landed; keep the dictation on the
+        // clipboard rather than risk leaving it only in history.
         let result = TextInjectionEngine.assessUnlocatedPaste(
             before: nil,
             after: field(nil),
+            pastedText: "我头已经戒了。"
+        )
+        XCTAssertFalse(result.landed)
+        XCTAssertEqual(result.reason, "valueUnreadable")
+    }
+
+    func testFieldWithoutPrePasteSnapshotCountsWhenItHoldsTheText() {
+        // WeChat-style: the pre-paste focus query fails, but the field read
+        // after Cmd+V contains the dictation.
+        let result = TextInjectionEngine.assessUnlocatedPaste(
+            before: nil,
+            after: field("我头已经戒了。"),
             pastedText: "我头已经戒了。"
         )
         XCTAssertTrue(result.landed)
