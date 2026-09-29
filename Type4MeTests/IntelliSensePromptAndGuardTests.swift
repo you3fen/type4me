@@ -107,6 +107,29 @@ final class IntelliSensePromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("输入：好的，你再修改一下"))
     }
 
+    func testBasePromptMatchesPunctuationToToneWithoutChangingWordRetention() {
+        let prompt = IntelliSensePromptBuilder.baseTemplate
+
+        XCTAssertTrue(prompt.contains("标点要还原说话时的语气，不要一律用句号"))
+        XCTAssertTrue(prompt.contains("本条只决定标点符号"))
+        XCTAssertTrue(prompt.contains("不得因为本条多保留、恢复或新增任何词语"))
+        XCTAssertTrue(prompt.contains("平静内容不得硬加情绪"))
+        XCTAssertTrue(prompt.contains("输出：现在着急有什么用？！"))
+        XCTAssertTrue(prompt.contains("输出：我觉得这个方案可以，明天就按这个做。"))
+    }
+
+    func testEmailSceneKeepsPunctuationRestrained() {
+        var settings = IntelliSenseSettings()
+        settings.applicationAwarenessEnabled = true
+        let prompt = IntelliSensePromptBuilder.build(input: .init(
+            context: snapshot(category: .email, control: .multiLine),
+            settings: settings,
+            expressionProfile: nil
+        ))
+
+        XCTAssertTrue(prompt.contains("标点保持克制，不叠用标点"))
+    }
+
     func testCompactMessagingSceneCannotSuppressExplicitMultiPointLists() {
         var settings = IntelliSenseSettings()
         settings.applicationAwarenessEnabled = true
