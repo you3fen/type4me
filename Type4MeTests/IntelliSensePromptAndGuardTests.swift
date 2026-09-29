@@ -140,6 +140,32 @@ final class IntelliSensePromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("输出：我操，我操！这破玩意儿怎么又他妈崩了？！我真的服了！"))
     }
 
+    func testBasePromptSplitsLongMultiTopicContentIntoParagraphs() {
+        let prompt = IntelliSensePromptBuilder.baseTemplate
+
+        XCTAssertTrue(prompt.contains("整理后的内容较长（大约 150 字以上）且有话题转换时，按意思分成自然段，段与段之间空一行"))
+        XCTAssertTrue(prompt.contains("同一件事的连续论述不硬拆"))
+        XCTAssertTrue(prompt.contains("一两句话的短内容不分段"))
+        XCTAssertTrue(prompt.contains("分段只插入空行，不改变文字和顺序"))
+    }
+
+    func testSceneParagraphRulesRespectMessagingAndSingleLineControls() {
+        var settings = IntelliSenseSettings()
+        settings.applicationAwarenessEnabled = true
+        func prompt(_ category: ApplicationCategory, _ control: InputControlCategory) -> String {
+            IntelliSensePromptBuilder.build(input: .init(
+                context: snapshot(category: category, control: control),
+                settings: settings,
+                expressionProfile: nil
+            ))
+        }
+
+        XCTAssertTrue(prompt(.messaging, .multiLine).contains("只有内容很长时才分段"))
+        XCTAssertTrue(prompt(.aiAssistant, .multiLine).contains("较长内容仍按基础规则分自然段"))
+        XCTAssertTrue(prompt(.browser, .search).contains("保持单行结构，不新增标题、列表和编号，也不分段"))
+        XCTAssertTrue(prompt(.terminal, .terminal).contains("保持单行结构，不新增标题、列表和编号，也不分段"))
+    }
+
     func testAIAssistantSceneCorrectsRecognitionWithoutGuessingNames() {
         var settings = IntelliSenseSettings()
         settings.applicationAwarenessEnabled = true
