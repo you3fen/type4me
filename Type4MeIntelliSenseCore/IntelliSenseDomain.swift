@@ -1,6 +1,7 @@
 import Foundation
 
 public enum ApplicationCategory: String, Codable, CaseIterable, Hashable, Sendable {
+    case aiAssistant
     case messaging
     case email
     case document
@@ -78,6 +79,14 @@ public enum AppContextClassifier {
         let name = (appName ?? "").lowercased()
         let identity = bundle + " " + name
 
+        // Checked first: ChatGPT ships as `com.openai.codex`, which would
+        // otherwise fall through to the development family below.
+        if containsAny(identity, [
+            "com.anthropic.", "com.openai.", "chatgpt", "com.meta.endo",
+            "com.work.pc.doubao", "deepseek", "moonshot", "kimi", "perplexity", "yuanbao",
+        ]) {
+            return .aiAssistant
+        }
         if containsAny(identity, [
             "slack", "wechat", "weixin", "lark", "feishu", "discord",
             "telegram", "whatsapp", "messages", "mobilesms", "微信", "飞书",

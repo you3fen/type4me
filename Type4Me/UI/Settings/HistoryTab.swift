@@ -1394,6 +1394,7 @@ struct HistoryTab: View {
 
     private func intelliSenseAppCategoryDescription(_ category: ApplicationCategory) -> String {
         switch category {
+        case .aiAssistant: return L("AI 助手", "AI assistant")
         case .messaging: return L("聊天应用", "Messaging app")
         case .email: return L("邮件应用", "Email app")
         case .document: return L("文档应用", "Document app")

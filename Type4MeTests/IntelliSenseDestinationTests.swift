@@ -57,12 +57,12 @@ final class IntelliSenseDestinationTests: XCTestCase {
         let capturedTargets = await captures.targets()
         XCTAssertEqual(capturedTargets, [chatGPT])
         XCTAssertEqual(prompts.count, 1)
-        XCTAssertTrue(prompts[0].contains("当前是开发工具"))
+        XCTAssertTrue(prompts[0].contains("当前是和 AI 助手对话"))
         XCTAssertTrue(prompts[0].contains("标识符和大小写"))
         XCTAssertFalse(prompts[0].contains("当前是聊天场景"))
         XCTAssertFalse(prompts[0].contains("SYNTHETIC_WECHAT_CONTEXT"))
         XCTAssertTrue(result?.trace?.contains("ChatGPT") == true)
-        XCTAssertTrue(result?.trace?.contains("development") == true)
+        XCTAssertTrue(result?.trace?.contains("aiAssistant") == true)
         XCTAssertFalse(result?.trace?.contains("WeChat") == true)
     }
 
@@ -153,7 +153,7 @@ final class IntelliSenseDestinationTests: XCTestCase {
         let capturedTargets = await captures.targets()
         XCTAssertEqual(capturedTargets, [chrome])
         XCTAssertEqual(prompts.count, 1)
-        XCTAssertTrue(prompts[0].contains("当前是开发工具"))
+        XCTAssertTrue(prompts[0].contains("当前是和 AI 助手对话"))
         XCTAssertFalse(prompts[0].contains("当前是浏览器普通输入控件"))
         XCTAssertTrue(result?.trace?.contains("ChatGPT") == true)
         XCTAssertTrue(result?.trace?.contains("appOnly") == true)

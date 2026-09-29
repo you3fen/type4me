@@ -9,6 +9,7 @@ public enum IntelliSenseAwarenessLayer: String, Codable, Equatable, Hashable, Se
 public enum IntelliSenseHistoryScene: String, Codable, Equatable, Sendable {
     case search
     case title
+    case aiAssistant
     case messaging
     case email
     case document
@@ -181,6 +182,7 @@ public enum IntelliSenseHistoryTraceBuilder {
         if control == .search { return .search }
         if control == .title { return .title }
         switch category {
+        case .aiAssistant: return .aiAssistant
         case .messaging: return .messaging
         case .email: return .email
         case .document: return .document

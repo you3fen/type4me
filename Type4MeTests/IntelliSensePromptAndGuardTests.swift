@@ -7,6 +7,7 @@ final class IntelliSensePromptTests: XCTestCase {
 
     func testScenePolicyGoldenMapping() {
         let expected: [ApplicationCategory: ScenePolicy] = [
+            .aiAssistant: .init(compactness: .medium, formality: .low, structure: .low, preserveTechnicalTokens: true, preserveCommandSyntax: false),
             .messaging: .init(compactness: .high, formality: .low, structure: .low, preserveTechnicalTokens: false, preserveCommandSyntax: false),
             .email: .init(compactness: .medium, formality: .high, structure: .low, preserveTechnicalTokens: false, preserveCommandSyntax: false),
             .document: .init(compactness: .low, formality: .medium, structure: .medium, preserveTechnicalTokens: false, preserveCommandSyntax: false),
@@ -128,6 +129,33 @@ final class IntelliSensePromptTests: XCTestCase {
         ))
 
         XCTAssertTrue(prompt.contains("标点保持克制，不叠用标点"))
+        XCTAssertTrue(prompt.contains("删除粗口和脏话"))
+    }
+
+    func testBasePromptKeepsProfanityByDefault() {
+        let prompt = IntelliSensePromptBuilder.baseTemplate
+
+        XCTAssertTrue(prompt.contains("粗口和脏话属于用户的语气和态度，默认保留原词"))
+        XCTAssertTrue(prompt.contains("同一个粗口连续机械重复多遍时，压缩为一到两次"))
+        XCTAssertTrue(prompt.contains("输出：我操，我操！这破玩意儿怎么又他妈崩了？！我真的服了！"))
+    }
+
+    func testAIAssistantSceneCorrectsRecognitionWithoutGuessingNames() {
+        var settings = IntelliSenseSettings()
+        settings.applicationAwarenessEnabled = true
+        let prompt = IntelliSensePromptBuilder.build(input: .init(
+            context: snapshot(category: .aiAssistant, control: .multiLine),
+            settings: settings,
+            expressionProfile: nil
+        ))
+
+        XCTAssertTrue(prompt.contains("当前是和 AI 助手对话"))
+        XCTAssertTrue(prompt.contains("积极纠正识别错误"))
+        XCTAssertTrue(prompt.contains("“新开一个绘画”“之前的几个绘画”应为“会话”"))
+        XCTAssertTrue(prompt.contains("不得凭猜测把一个名称换成个人词汇和上下文都没有出现过的产品、库或技术名"))
+        XCTAssertTrue(prompt.contains("保留用户本来的口语语气、情绪、态度和粗口"))
+        XCTAssertTrue(prompt.contains("代码标识符和大小写必须原样保留"))
+        XCTAssertFalse(prompt.contains("删除粗口和脏话"))
     }
 
     func testCompactMessagingSceneCannotSuppressExplicitMultiPointLists() {
